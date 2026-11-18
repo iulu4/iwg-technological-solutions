@@ -4,6 +4,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 from functools import wraps
+from urllib.parse import quote
 
 from flask import (
     Flask, render_template_string, request, redirect,
@@ -14,7 +15,7 @@ from werkzeug.utils import secure_filename
 
 
 # =========================================================
-# CONFIGURAÇÕES DA IWG
+# CONFIGURAÇÕES IWG
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -45,7 +46,29 @@ COR_BORDA = "#3A4F7C"
 
 WHATSAPP = "5527999243025"
 
+INSTAGRAM = "https://instagram.com/iulumozart"
+LINKEDIN = "https://linkedin.com/in/iuluwayner"
+YOUTUBE = "https://www.youtube.com/channel/UC8Z1DSRn3j5Rj4zMuy5sXIQ"
+
 EXTENSOES = {"jpg", "jpeg", "png", "webp"}
+
+# Imagens provisórias externas.
+# Quando você cadastrar fotos próprias no painel,
+# elas substituirão automaticamente estas imagens.
+
+IMAGENS_PRODUTOS = {
+    1: "https://images.unsplash.com/photo-1515879218367-8466d910aaa4?w=900",
+    2: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=900",
+    3: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=900",
+    4: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=900",
+    5: "https://images.unsplash.com/photo-1550009158-9ebf69173e03?w=900",
+    6: "https://images.unsplash.com/photo-1606220945770-b5b6c2c55bf1?w=900"
+}
+
+IMAGEM_BANNER = (
+    "https://images.unsplash.com/photo-1518770660439-4636190af475"
+    "?auto=format&fit=crop&w=2000&q=85"
+)
 
 
 # =========================================================
@@ -60,6 +83,7 @@ def conectar():
 
 def iniciar_banco():
     with conectar() as conn:
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS produtos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +111,10 @@ def iniciar_banco():
 
         if not admin:
             conn.execute(
-                "INSERT INTO administradores (usuario, senha) VALUES (?, ?)",
+                """
+                INSERT INTO administradores (usuario, senha)
+                VALUES (?, ?)
+                """,
                 ("iulu", generate_password_hash("iulu"))
             )
 
@@ -96,27 +123,52 @@ def iniciar_banco():
         ).fetchone()["total"]
 
         if total == 0:
+
             iniciais = [
-                ("Automação Python sob Medida", "Softwares",
-                 "Automação de tarefas e processos sob medida.", 1500),
-                ("Licença Acesso IWG Core", "Softwares",
-                 "Soluções digitais e acesso a ferramentas IWG.", 850),
-                ("Consultoria em Arquitetura", "Serviços",
-                 "Consultoria em arquitetura de sistemas e software.", 2500),
-                ("Kit E-books Técnicos", "Produtos",
-                 "Materiais digitais para aprendizado e tecnologia.", 120),
-                ("Adaptador Lightning OTG", "Eletrônicos",
-                 "Acessório eletrônico. Consulte disponibilidade.", 45),
-                ("Fones Apple AirPods", "Eletrônicos",
-                 "Produto ilustrativo. Consulte disponibilidade.", 199)
+                (
+                    "Automação Python sob Medida",
+                    "Softwares",
+                    "Automação de tarefas e processos sob medida.",
+                    1500
+                ),
+                (
+                    "Licença Acesso IWG Core",
+                    "Softwares",
+                    "Soluções digitais e acesso a ferramentas IWG.",
+                    850
+                ),
+                (
+                    "Consultoria em Arquitetura",
+                    "Serviços",
+                    "Consultoria em arquitetura de sistemas e software.",
+                    2500
+                ),
+                (
+                    "Kit E-books Técnicos",
+                    "Produtos",
+                    "Materiais digitais para aprendizado e tecnologia.",
+                    120
+                ),
+                (
+                    "Adaptador Lightning OTG",
+                    "Eletrônicos",
+                    "Acessório eletrônico. Consulte disponibilidade.",
+                    45
+                ),
+                (
+                    "Fones Apple AirPods",
+                    "Eletrônicos",
+                    "Produto ilustrativo. Consulte disponibilidade.",
+                    199
+                )
             ]
 
-            for nome, categoria, descricao, preco in iniciais:
+            for produto in iniciais:
                 conn.execute("""
                     INSERT INTO produtos
                     (nome, categoria, descricao, preco)
                     VALUES (?, ?, ?, ?)
-                """, (nome, categoria, descricao, preco))
+                """, produto)
 
 
 iniciar_banco()
@@ -127,16 +179,29 @@ iniciar_banco()
 # =========================================================
 
 def dinheiro(valor):
-    return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return (
+        f"R$ {float(valor):,.2f}"
+        .replace(",", "X")
+        .replace(".", ",")
+        .replace("X", ".")
+    )
 
 
-def imagem_url(nome):
-    if nome:
-        return url_for("static", filename="produtos/" + nome)
-    return ""
+def imagem_produto(produto):
+    if produto["imagem"]:
+        return url_for(
+            "static",
+            filename="produtos/" + produto["imagem"]
+        )
+
+    return IMAGENS_PRODUTOS.get(
+        produto["id"],
+        IMAGEM_BANNER
+    )
 
 
 def salvar_imagem(arquivo):
+
     if not arquivo or not arquivo.filename:
         return ""
 
@@ -151,11 +216,14 @@ def salvar_imagem(arquivo):
         return ""
 
     nome = f"{uuid.uuid4().hex}.{extensao}"
+
     arquivo.save(UPLOAD_DIR / nome)
+
     return nome
 
 
 def excluir_imagem(nome):
+
     if not nome:
         return
 
@@ -166,28 +234,56 @@ def excluir_imagem(nome):
 
 
 def admin_required(func):
+
     @wraps(func)
     def wrapper(*args, **kwargs):
+
         if not session.get("admin"):
             return redirect(url_for("admin_login"))
+
         return func(*args, **kwargs)
+
     return wrapper
 
 
+def quantidade_carrinho():
+    return sum(session.get("carrinho", {}).values())
+
+
 # =========================================================
-# MODELO VISUAL DO SITE
+# VISUAL DO SITE
 # =========================================================
 
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="pt-br">
+
 <head>
+
 <meta charset="UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<meta name="theme-color" content="#020526">
+
+<meta name="description"
+content="IWG Technological Solutions. Tecnologia, eletrônicos,
+importações e desenvolvimento de software.">
+
 <title>{{ titulo }} | IWG Technological Solutions</title>
 
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://images.unsplash.com">
+
 <style>
-* { box-sizing: border-box; }
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+}
 
 body {
     margin: 0;
@@ -196,7 +292,10 @@ body {
     font-family: Arial, Helvetica, sans-serif;
 }
 
-a { color: inherit; text-decoration: none; }
+a {
+    color: inherit;
+    text-decoration: none;
+}
 
 header {
     text-align: center;
@@ -216,7 +315,7 @@ header {
     justify-content: center;
     background-color: {{ fundo }};
     overflow: hidden;
-    box-shadow: 0 4px 15px rgba(247, 192, 74, 0.2);
+    box-shadow: 0 4px 20px rgba(247,192,74,.25);
 }
 
 .avatar img {
@@ -230,7 +329,7 @@ h1 {
     font-size: 20px;
     margin-bottom: 4px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: .5px;
 }
 
 .sub-titulo {
@@ -248,43 +347,87 @@ h1 {
 nav {
     display: flex;
     justify-content: center;
+    align-items: center;
     flex-wrap: wrap;
     gap: 12px;
     padding: 16px;
     background: #080C38;
     border-bottom: 1px solid {{ borda }};
+    position: sticky;
+    top: 0;
+    z-index: 100;
 }
 
 nav a {
     color: {{ ouro }};
-    font-size: 14px;
-    padding: 8px 12px;
+    font-size: 13px;
+    padding: 9px 12px;
+    transition: .3s;
+}
+
+nav a:hover {
+    background: {{ ouro }};
+    color: #020526;
+    border-radius: 6px;
 }
 
 .container {
     width: 92%;
-    max-width: 1150px;
+    max-width: 1200px;
     margin: 30px auto;
 }
 
+/* BANNER PRINCIPAL */
+
 .banner {
-    padding: 45px 25px;
-    background: linear-gradient(135deg, #0A0E45, #111A55);
-    border: 1px solid {{ borda }};
-    border-radius: 16px;
+    min-height: 430px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-align: center;
-    margin-bottom: 35px;
+    padding: 60px 25px;
+    border: 1px solid {{ borda }};
+    border-radius: 18px;
+    margin-bottom: 55px;
+
+    background:
+        linear-gradient(
+            90deg,
+            rgba(2,5,38,.96),
+            rgba(2,5,38,.75),
+            rgba(2,5,38,.65)
+        ),
+        url("{{ imagem_banner }}");
+
+    background-size: cover;
+    background-position: center;
+}
+
+.banner-conteudo {
+    max-width: 850px;
+}
+
+.banner-etiqueta {
+    color: {{ ouro }};
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    text-transform: uppercase;
 }
 
 .banner h2 {
     color: {{ ouro }};
-    font-size: 30px;
-    margin-top: 0;
+    font-size: clamp(30px, 5vw, 52px);
+    line-height: 1.15;
+    margin: 20px 0;
 }
 
 .banner p {
-    color: #D1D5DB;
-    line-height: 1.7;
+    color: #E5E7EB;
+    line-height: 1.8;
+    font-size: 17px;
+    max-width: 700px;
+    margin: 0 auto 25px;
 }
 
 .botao {
@@ -292,11 +435,18 @@ nav a {
     background: {{ ouro }};
     color: #020526;
     font-weight: bold;
-    padding: 11px 18px;
+    padding: 13px 21px;
     border: 0;
     border-radius: 7px;
     cursor: pointer;
     margin: 5px;
+    transition: .3s;
+    font-size: 13px;
+}
+
+.botao:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(247,192,74,.25);
 }
 
 .botao-secundario {
@@ -305,35 +455,24 @@ nav a {
     border: 1px solid {{ ouro }};
 }
 
-h2.secao {
+/* SEÇÕES */
+
+.secao {
     color: {{ ouro }};
-    margin: 30px 0 18px;
+    font-size: 25px;
+    margin: 45px 0 20px;
 }
 
-.filtros {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 9px;
-    margin-bottom: 20px;
-}
-
-.filtros a {
-    padding: 9px 13px;
-    border: 1px solid {{ borda }};
-    border-radius: 20px;
-    color: white;
-    font-size: 13px;
-}
-
-.filtros a:hover {
-    background: {{ ouro }};
-    color: #020526;
+.subsecao {
+    color: #AEB6D2;
+    line-height: 1.7;
+    margin-bottom: 25px;
 }
 
 .grade {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-    gap: 20px;
+    gap: 22px;
 }
 
 .produto {
@@ -341,41 +480,124 @@ h2.secao {
     border: 1px solid {{ borda }};
     border-radius: 13px;
     overflow: hidden;
-    padding-bottom: 18px;
+    transition: .3s;
+}
+
+.produto:hover {
+    transform: translateY(-5px);
+    border-color: {{ ouro }};
+    box-shadow: 0 12px 28px rgba(0,0,0,.25);
 }
 
 .produto img {
     width: 100%;
-    height: 190px;
+    height: 210px;
     object-fit: cover;
     background: #101641;
 }
 
-.sem-imagem {
-    height: 190px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: {{ ouro }};
-    font-size: 45px;
+.produto-conteudo {
+    padding: 17px;
 }
 
-.produto-conteudo { padding: 15px; }
+.categoria {
+    color: {{ ouro }};
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
 
-.produto h3 { color: {{ ouro }}; }
+.produto h3 {
+    color: {{ ouro }};
+    font-size: 17px;
+    line-height: 1.4;
+}
 
 .produto p {
     color: #C4C8D5;
-    line-height: 1.5;
-    font-size: 14px;
+    line-height: 1.6;
+    font-size: 13px;
+    min-height: 42px;
 }
 
 .preco {
-    font-size: 20px;
+    font-size: 21px;
     color: {{ ouro }};
     font-weight: bold;
-    margin: 14px 0;
+    margin: 15px 0;
 }
+
+/* SERVIÇOS */
+
+.servico {
+    background: linear-gradient(145deg, #0A0E45, #111A55);
+    border: 1px solid {{ borda }};
+    border-radius: 13px;
+    padding: 25px;
+    transition: .3s;
+}
+
+.servico:hover {
+    border-color: {{ ouro }};
+    transform: translateY(-4px);
+}
+
+.servico-icone {
+    font-size: 35px;
+    margin-bottom: 12px;
+}
+
+.servico h3 {
+    color: {{ ouro }};
+    font-size: 18px;
+}
+
+.servico p {
+    color: #C4C8D5;
+    line-height: 1.7;
+    font-size: 14px;
+}
+
+/* SOBRE */
+
+.sobre {
+    background: linear-gradient(135deg, #0A0E45, #080C38);
+    border: 1px solid {{ borda }};
+    border-radius: 15px;
+    padding: 30px;
+    margin-top: 50px;
+    line-height: 1.8;
+    color: #D1D5DB;
+}
+
+.sobre h2 {
+    color: {{ ouro }};
+}
+
+/* FILTROS */
+
+.filtros {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-bottom: 25px;
+}
+
+.filtros a {
+    padding: 9px 15px;
+    border: 1px solid {{ borda }};
+    border-radius: 20px;
+    color: white;
+    font-size: 13px;
+}
+
+.filtros a:hover,
+.filtros a.ativo {
+    background: {{ ouro }};
+    color: #020526;
+}
+
+/* FORMULÁRIOS */
 
 .formulario {
     background: {{ card }};
@@ -397,7 +619,9 @@ input, textarea, select {
     border-radius: 6px;
 }
 
-label { color: {{ ouro }}; }
+label {
+    color: {{ ouro }};
+}
 
 table {
     width: 100%;
@@ -411,23 +635,18 @@ td, th {
     text-align: left;
 }
 
-th { color: {{ ouro }}; }
+th {
+    color: {{ ouro }};
+}
 
 .aviso {
-    padding: 12px;
+    padding: 15px;
     background: #111A55;
     border-radius: 8px;
     color: #D1D5DB;
-    margin: 15px 0;
-}
-
-footer {
-    text-align: center;
-    padding: 30px 15px;
-    color: #9CA3AF;
-    border-top: 1px solid {{ borda }};
-    margin-top: 50px;
+    margin: 25px 0;
     font-size: 13px;
+    line-height: 1.6;
 }
 
 .flash {
@@ -439,36 +658,114 @@ footer {
     color: white;
 }
 
-@media(max-width: 600px) {
-    .banner h2 { font-size: 23px; }
-    header { padding: 25px 10px; }
-    .container { width: 94%; }
-    td, th { padding: 7px; font-size: 12px; }
+footer {
+    text-align: center;
+    padding: 40px 15px;
+    color: #9CA3AF;
+    border-top: 1px solid {{ borda }};
+    margin-top: 60px;
+    font-size: 13px;
+    line-height: 1.9;
+    background: #05082C;
 }
+
+footer strong {
+    color: {{ ouro }};
+    font-size: 16px;
+}
+
+footer a {
+    color: {{ ouro }};
+    margin: 0 5px;
+}
+
+.redes {
+    margin: 15px 0;
+}
+
+@media(max-width: 600px) {
+
+    header {
+        padding: 25px 10px;
+    }
+
+    .container {
+        width: 94%;
+    }
+
+    .banner {
+        min-height: 390px;
+        padding: 35px 15px;
+    }
+
+    .banner h2 {
+        font-size: 29px;
+    }
+
+    .banner p {
+        font-size: 14px;
+    }
+
+    .secao {
+        font-size: 22px;
+    }
+
+    nav {
+        gap: 3px;
+        padding: 10px 4px;
+    }
+
+    nav a {
+        font-size: 11px;
+        padding: 8px 7px;
+    }
+
+    td, th {
+        padding: 7px;
+        font-size: 11px;
+    }
+}
+
 </style>
 </head>
 
 <body>
 
 <header>
+
     <div class="avatar">
-        <img src="/arquivos/logo.jpg" alt="Logo IWG"
+        <img src="/arquivos/logo.jpg"
+             alt="Logo IWG"
              onerror="this.style.display='none'">
     </div>
+
     <h1>IWG TECHNOLOGICAL SOLUTIONS</h1>
-    <div class="sub-titulo">(Analista de sistemas e engenheiro de software)</div>
-    <div class="sub-marca">IWG Technological Solutions • Catálogo Oficial</div>
+
+    <div class="sub-titulo">
+        (Analista de sistemas e engenheiro de software)
+    </div>
+
+    <div class="sub-marca">
+        IWG Technological Solutions • Catálogo Oficial
+    </div>
+
 </header>
 
 <nav>
     <a href="{{ url_for('inicio') }}">Início</a>
     <a href="{{ url_for('inicio') }}#catalogo">Catálogo</a>
     <a href="{{ url_for('inicio') }}#servicos">Serviços</a>
-    <a href="{{ url_for('carrinho') }}">Carrinho ({{ quantidade_carrinho }})</a>
-    <a href="https://wa.me/{{ whatsapp }}" target="_blank">WhatsApp</a>
+    <a href="{{ url_for('inicio') }}#sobre">Sobre</a>
+    <a href="{{ url_for('carrinho') }}">
+        Carrinho ({{ quantidade_carrinho }})
+    </a>
+    <a href="https://wa.me/{{ whatsapp }}" target="_blank">
+        WhatsApp
+    </a>
 </nav>
 
 <div class="container">
+
 {% with mensagens = get_flashed_messages() %}
     {% for mensagem in mensagens %}
         <div class="flash">{{ mensagem }}</div>
@@ -476,18 +773,31 @@ footer {
 {% endwith %}
 
 {{ conteudo|safe }}
+
 </div>
 
 <footer>
+
     <p><strong>IWG TECHNOLOGICAL SOLUTIONS</strong></p>
-    <p>Tecnologia • Eletrônicos • Importações • Desenvolvimento de Software</p>
+
     <p>
-      <a href="https://instagram.com/iulumozart" target="_blank">Instagram</a> |
-      <a href="https://linkedin.com/in/iuluwayner" target="_blank">LinkedIn</a> |
-      <a href="https://wa.me/{{ whatsapp }}" target="_blank">WhatsApp</a>
+        Tecnologia • Eletrônicos • Importações
+        • Desenvolvimento de Software
     </p>
+
+    <div class="redes">
+        <a href="{{ instagram }}" target="_blank">Instagram</a> |
+        <a href="{{ linkedin }}" target="_blank">LinkedIn</a> |
+        <a href="{{ youtube }}" target="_blank">YouTube</a> |
+        <a href="https://wa.me/{{ whatsapp }}" target="_blank">WhatsApp</a>
+    </div>
+
     <p>© IWG Technological Solutions</p>
-    <a href="{{ url_for('admin_login') }}">Área administrativa</a>
+
+    <a href="{{ url_for('admin_login') }}">
+        Área administrativa
+    </a>
+
 </footer>
 
 </body>
@@ -495,8 +805,11 @@ footer {
 """
 
 
+# =========================================================
+# RENDERIZAÇÃO
+# =========================================================
+
 def render_site(conteudo, titulo="Início"):
-    quantidade = sum(session.get("carrinho", {}).values())
 
     return render_template_string(
         BASE_HTML,
@@ -507,22 +820,30 @@ def render_site(conteudo, titulo="Início"):
         card=COR_CARD,
         borda=COR_BORDA,
         whatsapp=WHATSAPP,
-        quantidade_carrinho=quantidade
+        instagram=INSTAGRAM,
+        linkedin=LINKEDIN,
+        youtube=YOUTUBE,
+        imagem_banner=IMAGEM_BANNER,
+        quantidade_carrinho=quantidade_carrinho()
     )
 
 
 # =========================================================
-# SITE PÚBLICO
+# PÁGINA INICIAL
 # =========================================================
 
 @app.route("/")
 def inicio():
+
     categoria = request.args.get("categoria", "")
 
     with conectar() as conn:
+
         categorias = conn.execute("""
-            SELECT DISTINCT categoria FROM produtos
-            WHERE ativo = 1 ORDER BY categoria
+            SELECT DISTINCT categoria
+            FROM produtos
+            WHERE ativo = 1
+            ORDER BY categoria
         """).fetchall()
 
         if categoria:
@@ -534,91 +855,213 @@ def inicio():
         else:
             produtos = conn.execute("""
                 SELECT * FROM produtos
-                WHERE ativo = 1 ORDER BY id DESC
+                WHERE ativo = 1
+                ORDER BY id DESC
             """).fetchall()
 
     html = """
+
     <section class="banner">
-        <h2>Tecnologia que transforma ideias em soluções.</h2>
-        <p>
-        Bem-vindo à IWG Technological Solutions.
-        Soluções digitais, desenvolvimento de software,
-        eletrônicos e importações.
-        </p>
-        <a class="botao" href="#catalogo">Conheça nosso catálogo</a>
-        <a class="botao botao-secundario"
-           href="https://wa.me/{{ whatsapp }}">Fale conosco</a>
+
+        <div class="banner-conteudo">
+
+            <div class="banner-etiqueta">
+                Tecnologia • Inovação • Soluções
+            </div>
+
+            <h2>
+                Tecnologia que transforma ideias em soluções.
+            </h2>
+
+            <p>
+                Bem-vindo à IWG Technological Solutions.
+                Desenvolvimento de software, automações,
+                eletrônicos, importações e soluções digitais
+                para conectar você ao futuro.
+            </p>
+
+            <a class="botao" href="#catalogo">
+                Conheça nosso catálogo
+            </a>
+
+            <a class="botao botao-secundario"
+               href="https://wa.me/{{ whatsapp }}">
+                Fale conosco
+            </a>
+
+        </div>
+
     </section>
+
 
     <section id="servicos">
+
         <h2 class="secao">Nossas soluções</h2>
+
+        <p class="subsecao">
+            Tecnologia aplicada às necessidades de pessoas
+            e empresas.
+        </p>
+
         <div class="grade">
-            <div class="produto produto-conteudo">
+
+            <div class="servico">
+                <div class="servico-icone">💻</div>
                 <h3>Desenvolvimento de Software</h3>
-                <p>Criação de sistemas, automações e soluções personalizadas.</p>
+                <p>
+                    Criação de sistemas, aplicativos,
+                    plataformas e soluções personalizadas.
+                </p>
             </div>
-            <div class="produto produto-conteudo">
+
+            <div class="servico">
+                <div class="servico-icone">⚙️</div>
+                <h3>Automação e Inteligência</h3>
+                <p>
+                    Automação de tarefas, integração de processos
+                    e desenvolvimento de ferramentas digitais.
+                </p>
+            </div>
+
+            <div class="servico">
+                <div class="servico-icone">🌐</div>
                 <h3>Consultoria em Tecnologia</h3>
-                <p>Arquitetura de sistemas e orientação tecnológica.</p>
+                <p>
+                    Arquitetura de sistemas, planejamento
+                    e orientação tecnológica.
+                </p>
             </div>
-            <div class="produto produto-conteudo">
+
+            <div class="servico">
+                <div class="servico-icone">📱</div>
                 <h3>Eletrônicos e Importações</h3>
-                <p>Produtos e acessórios tecnológicos selecionados.</p>
+                <p>
+                    Produtos, acessórios e soluções tecnológicas
+                    selecionadas.
+                </p>
             </div>
+
         </div>
+
     </section>
 
+
     <section id="catalogo">
+
         <h2 class="secao">Catálogo IWG</h2>
 
+        <p class="subsecao">
+            Conheça nossos produtos, serviços e soluções digitais.
+        </p>
+
         <div class="filtros">
-            <a href="{{ url_for('inicio') }}">Todos</a>
+
+            <a class="{{ 'ativo' if not categoria else '' }}"
+               href="{{ url_for('inicio') }}">
+                Todos
+            </a>
+
             {% for cat in categorias %}
-            <a href="{{ url_for('inicio', categoria=cat['categoria']) }}">
+
+            <a class="{{ 'ativo' if categoria == cat['categoria'] else '' }}"
+               href="{{ url_for('inicio', categoria=cat['categoria']) }}">
                 {{ cat['categoria'] }}
             </a>
+
             {% endfor %}
+
         </div>
 
+
         <div class="grade">
+
         {% for p in produtos %}
+
             <article class="produto">
-                {% if p['imagem'] %}
-                    <img src="{{ url_for('static', filename='produtos/' + p['imagem']) }}"
-                         alt="{{ p['nome'] }}">
-                {% else %}
-                    <div class="sem-imagem">IWG</div>
-                {% endif %}
+
+                <img
+                    src="{{ imagem_produto(p) }}"
+                    alt="{{ p['nome'] }}"
+                    loading="lazy"
+                    onerror="this.style.display='none'"
+                >
 
                 <div class="produto-conteudo">
-                    <small>{{ p['categoria'] }}</small>
+
+                    <span class="categoria">
+                        {{ p['categoria'] }}
+                    </span>
+
                     <h3>{{ p['nome'] }}</h3>
+
                     <p>{{ p['descricao'] }}</p>
-                    <div class="preco">{{ dinheiro(p['preco']) }}</div>
+
+                    <div class="preco">
+                        {{ dinheiro(p['preco']) }}
+                    </div>
 
                     <a class="botao"
                        href="{{ url_for('produto', pid=p['id']) }}">
-                       Ver detalhes
+                        Ver detalhes
                     </a>
 
                     <form method="post"
                           action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
-                        <button class="botao botao-secundario" type="submit">
+
+                        <button class="botao botao-secundario"
+                                type="submit">
                             Adicionar ao carrinho
                         </button>
+
                     </form>
+
                 </div>
+
             </article>
+
         {% else %}
+
             <p>Nenhum produto cadastrado nesta categoria.</p>
+
         {% endfor %}
+
         </div>
+
     </section>
 
+
+    <section id="sobre" class="sobre">
+
+        <h2>Sobre a IWG Technological Solutions</h2>
+
+        <p>
+            A IWG Technological Solutions atua na área de
+            tecnologia, desenvolvimento de software,
+            automação, eletrônicos e importações.
+        </p>
+
+        <p>
+            Nosso objetivo é aproximar pessoas e empresas
+            de soluções tecnológicas modernas, oferecendo
+            ferramentas, produtos e serviços que transformam
+            ideias em possibilidades.
+        </p>
+
+        <a class="botao"
+           href="https://wa.me/{{ whatsapp }}">
+            Entre em contato
+        </a>
+
+    </section>
+
+
     <div class="aviso">
-        Imagens e valores ilustrativos ou sujeitos à disponibilidade.
+
+        Imagens ilustrativas e valores sujeitos à disponibilidade.
         Consulte nossa equipe antes de concluir sua compra.
+
     </div>
+
     """
 
     conteudo = render_template_string(
@@ -626,17 +1069,28 @@ def inicio():
         produtos=produtos,
         categorias=categorias,
         dinheiro=dinheiro,
+        imagem_produto=imagem_produto,
+        categoria=categoria,
         whatsapp=WHATSAPP
     )
 
     return render_site(conteudo)
 
 
+# =========================================================
+# DETALHES DO PRODUTO
+# =========================================================
+
 @app.route("/produto/<int:pid>")
 def produto(pid):
+
     with conectar() as conn:
+
         p = conn.execute(
-            "SELECT * FROM produtos WHERE id = ? AND ativo = 1",
+            """
+            SELECT * FROM produtos
+            WHERE id = ? AND ativo = 1
+            """,
             (pid,)
         ).fetchone()
 
@@ -644,51 +1098,85 @@ def produto(pid):
         return redirect(url_for("inicio"))
 
     html = """
+
     <div class="formulario">
-        {% if p['imagem'] %}
-        <img style="width:100%;max-height:350px;object-fit:contain"
-             src="{{ url_for('static', filename='produtos/' + p['imagem']) }}">
-        {% endif %}
 
-        <h2 style="color:{{ ouro }}">{{ p['nome'] }}</h2>
+        <img
+            style="width:100%;max-height:350px;object-fit:contain"
+            src="{{ imagem_produto(p) }}"
+            alt="{{ p['nome'] }}"
+        >
+
+        <h2 style="color:{{ ouro }}">
+            {{ p['nome'] }}
+        </h2>
+
         <p>{{ p['descricao'] }}</p>
-        <p>Categoria: {{ p['categoria'] }}</p>
-        <div class="preco">{{ dinheiro(p['preco']) }}</div>
 
-        <form method="post" action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
-            <button class="botao">Adicionar ao carrinho</button>
+        <p>Categoria: {{ p['categoria'] }}</p>
+
+        <div class="preco">
+            {{ dinheiro(p['preco']) }}
+        </div>
+
+        <form method="post"
+              action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
+
+            <button class="botao">
+                Adicionar ao carrinho
+            </button>
+
         </form>
 
-        <a class="botao botao-secundario" href="{{ url_for('inicio') }}">
+        <a class="botao botao-secundario"
+           href="{{ url_for('inicio') }}">
+
             Voltar ao catálogo
+
         </a>
+
     </div>
+
     """
 
     conteudo = render_template_string(
-        html, p=p, dinheiro=dinheiro, ouro=COR_OURO
+        html,
+        p=p,
+        dinheiro=dinheiro,
+        ouro=COR_OURO,
+        imagem_produto=imagem_produto
     )
 
     return render_site(conteudo, p["nome"])
 
 
 # =========================================================
-# CARRINHO E PEDIDOS
+# CARRINHO
 # =========================================================
 
 @app.route("/adicionar/<int:pid>", methods=["POST"])
 def adicionar_carrinho(pid):
+
     with conectar() as conn:
+
         p = conn.execute(
-            "SELECT id FROM produtos WHERE id = ? AND ativo = 1",
+            """
+            SELECT id FROM produtos
+            WHERE id = ? AND ativo = 1
+            """,
             (pid,)
         ).fetchone()
 
     if p:
+
         carrinho = session.get("carrinho", {})
+
         chave = str(pid)
+
         carrinho[chave] = carrinho.get(chave, 0) + 1
+
         session["carrinho"] = carrinho
+
         flash("Produto adicionado ao carrinho!")
 
     return redirect(request.referrer or url_for("inicio"))
@@ -696,21 +1184,30 @@ def adicionar_carrinho(pid):
 
 @app.route("/carrinho")
 def carrinho():
+
     itens = []
     total = 0
 
     ids = session.get("carrinho", {})
 
     with conectar() as conn:
+
         for pid, quantidade in ids.items():
+
             p = conn.execute(
-                "SELECT * FROM produtos WHERE id = ? AND ativo = 1",
+                """
+                SELECT * FROM produtos
+                WHERE id = ? AND ativo = 1
+                """,
                 (pid,)
             ).fetchone()
 
             if p:
+
                 subtotal = p["preco"] * quantidade
+
                 total += subtotal
+
                 itens.append({
                     "produto": p,
                     "quantidade": quantidade,
@@ -718,10 +1215,13 @@ def carrinho():
                 })
 
     html = """
+
     <h2 class="secao">Meu carrinho</h2>
 
     {% if itens %}
+
     <table>
+
         <tr>
             <th>Produto</th>
             <th>Qtd.</th>
@@ -730,38 +1230,61 @@ def carrinho():
         </tr>
 
         {% for item in itens %}
+
         <tr>
+
             <td>{{ item.produto['nome'] }}</td>
+
             <td>{{ item.quantidade }}</td>
+
             <td>{{ dinheiro(item.subtotal) }}</td>
+
             <td>
                 <a href="{{ url_for('remover_carrinho', pid=item.produto['id']) }}">
                     Remover
                 </a>
             </td>
+
         </tr>
+
         {% endfor %}
+
     </table>
 
-    <h2 style="color:{{ ouro }}">Total: {{ dinheiro(total) }}</h2>
+    <h2 style="color:{{ ouro }}">
+        Total: {{ dinheiro(total) }}
+    </h2>
 
-    <form method="post" action="{{ url_for('finalizar_pedido') }}">
+    <form method="post"
+          action="{{ url_for('finalizar_pedido') }}">
+
         <label>Seu nome</label>
-        <input name="nome" required placeholder="Digite seu nome">
+
+        <input name="nome"
+               required
+               placeholder="Digite seu nome">
 
         <label>Observações do pedido</label>
+
         <textarea name="observacoes" rows="3"></textarea>
 
-        <button class="botao" type="submit">Finalizar pelo WhatsApp</button>
+        <button class="botao" type="submit">
+            Finalizar pelo WhatsApp
+        </button>
+
     </form>
 
     {% else %}
+
         <p>Seu carrinho está vazio.</p>
+
     {% endif %}
 
-    <a class="botao botao-secundario" href="{{ url_for('inicio') }}">
+    <a class="botao botao-secundario"
+       href="{{ url_for('inicio') }}">
         Continuar comprando
     </a>
+
     """
 
     conteudo = render_template_string(
@@ -777,16 +1300,24 @@ def carrinho():
 
 @app.route("/remover-carrinho/<int:pid>")
 def remover_carrinho(pid):
+
     carrinho = session.get("carrinho", {})
+
     carrinho.pop(str(pid), None)
+
     session["carrinho"] = carrinho
+
     return redirect(url_for("carrinho"))
 
 
 @app.route("/finalizar", methods=["POST"])
 def finalizar_pedido():
+
     nome = request.form.get("nome", "").strip()
-    observacoes = request.form.get("observacoes", "").strip()
+
+    observacoes = request.form.get(
+        "observacoes", ""
+    ).strip()
 
     if not nome:
         flash("Informe seu nome.")
@@ -796,17 +1327,26 @@ def finalizar_pedido():
     total = 0
 
     with conectar() as conn:
+
         for pid, quantidade in session.get("carrinho", {}).items():
+
             p = conn.execute(
-                "SELECT * FROM produtos WHERE id = ? AND ativo = 1",
+                """
+                SELECT * FROM produtos
+                WHERE id = ? AND ativo = 1
+                """,
                 (pid,)
             ).fetchone()
 
             if p:
+
                 subtotal = p["preco"] * quantidade
+
                 total += subtotal
+
                 itens.append(
-                    f"{p['nome']} - {quantidade} unidade(s) - {dinheiro(subtotal)}"
+                    f"{p['nome']} - {quantidade} unidade(s) "
+                    f"- {dinheiro(subtotal)}"
                 )
 
     if not itens:
@@ -821,8 +1361,12 @@ def finalizar_pedido():
         + f"\\nObservações: {observacoes}"
     )
 
-    from urllib.parse import quote
-    link = "https://wa.me/" + WHATSAPP + "?text=" + quote(mensagem)
+    link = (
+        "https://wa.me/"
+        + WHATSAPP
+        + "?text="
+        + quote(mensagem)
+    )
 
     session["carrinho"] = {}
 
@@ -830,42 +1374,65 @@ def finalizar_pedido():
 
 
 # =========================================================
-# ADMINISTRAÇÃO
+# LOGIN ADMINISTRATIVO
 # =========================================================
 
 @app.route("/admin", methods=["GET", "POST"])
 def admin_login():
+
     if request.method == "POST":
+
         usuario = request.form.get("usuario", "")
+
         senha = request.form.get("senha", "")
 
         with conectar() as conn:
+
             admin = conn.execute(
-                "SELECT * FROM administradores WHERE usuario = ?",
+                """
+                SELECT * FROM administradores
+                WHERE usuario = ?
+                """,
                 (usuario,)
             ).fetchone()
 
         if admin and check_password_hash(admin["senha"], senha):
+
             session["admin"] = True
             session["usuario"] = usuario
+
             return redirect(url_for("admin_painel"))
 
         flash("Usuário ou senha incorretos.")
 
     html = """
+
     <div class="formulario">
-        <h2 style="color:{{ ouro }}">Acesso administrativo IWG</h2>
+
+        <h2 style="color:{{ ouro }}">
+            Acesso administrativo IWG
+        </h2>
 
         <form method="post">
+
             <label>Usuário</label>
+
             <input name="usuario" required>
 
             <label>Senha</label>
-            <input name="senha" type="password" required>
 
-            <button class="botao" type="submit">Entrar</button>
+            <input name="senha"
+                   type="password"
+                   required>
+
+            <button class="botao" type="submit">
+                Entrar
+            </button>
+
         </form>
+
     </div>
+
     """
 
     return render_site(
@@ -874,32 +1441,49 @@ def admin_login():
     )
 
 
+# =========================================================
+# PAINEL ADMINISTRATIVO
+# =========================================================
+
 @app.route("/admin/painel")
 @admin_required
 def admin_painel():
+
     with conectar() as conn:
+
         produtos = conn.execute(
             "SELECT * FROM produtos ORDER BY id DESC"
         ).fetchall()
 
     html = """
-    <h2 class="secao">Painel administrativo IWG</h2>
 
-    <p>Bem-vindo, {{ session.get('usuario') }}!</p>
+    <h2 class="secao">
+        Painel administrativo IWG
+    </h2>
 
-    <a class="botao" href="{{ url_for('admin_novo') }}">
-        Novo produto
+    <p>
+        Bem-vindo, {{ session.get('usuario') }}!
+    </p>
+
+    <a class="botao"
+       href="{{ url_for('admin_novo') }}">
+        + Novo produto
     </a>
 
-    <a class="botao botao-secundario" href="{{ url_for('admin_senha') }}">
+    <a class="botao botao-secundario"
+       href="{{ url_for('admin_senha') }}">
         Alterar senha
     </a>
 
-    <a class="botao botao-secundario" href="{{ url_for('admin_sair') }}">
+    <a class="botao botao-secundario"
+       href="{{ url_for('admin_sair') }}">
         Sair
     </a>
 
+    <h3 class="secao">Produtos cadastrados</h3>
+
     <table>
+
         <tr>
             <th>Produto</th>
             <th>Preço</th>
@@ -908,70 +1492,128 @@ def admin_painel():
         </tr>
 
         {% for p in produtos %}
+
         <tr>
+
             <td>{{ p['nome'] }}</td>
+
             <td>{{ dinheiro(p['preco']) }}</td>
-            <td>{{ 'Ativo' if p['ativo'] else 'Inativo' }}</td>
+
             <td>
-                <a href="{{ url_for('admin_editar', pid=p['id']) }}">Editar</a>
+                {{ 'Ativo' if p['ativo'] else 'Inativo' }}
+            </td>
+
+            <td>
+
+                <a href="{{ url_for('admin_editar', pid=p['id']) }}">
+                    Editar
+                </a>
+
                 |
+
                 <a href="{{ url_for('admin_alternar', pid=p['id']) }}">
                     Ativar/desativar
                 </a>
+
                 |
+
                 <a href="{{ url_for('admin_excluir', pid=p['id']) }}"
                    onclick="return confirm('Excluir este produto?')">
                     Excluir
                 </a>
+
             </td>
+
         </tr>
+
         {% endfor %}
+
     </table>
+
     """
 
     conteudo = render_template_string(
-        html, produtos=produtos, dinheiro=dinheiro
+        html,
+        produtos=produtos,
+        dinheiro=dinheiro
     )
 
     return render_site(conteudo, "Painel administrativo")
 
 
-def formulario_produto(p=None):
-    html = """
-    <div class="formulario">
-        <h2 style="color:{{ ouro }}">{{ titulo }}</h2>
+# =========================================================
+# FORMULÁRIO DE PRODUTOS
+# =========================================================
 
-        <form method="post" enctype="multipart/form-data">
+def formulario_produto(p=None):
+
+    html = """
+
+    <div class="formulario">
+
+        <h2 style="color:{{ ouro }}">
+            {{ titulo }}
+        </h2>
+
+        <form method="post"
+              enctype="multipart/form-data">
+
             <label>Nome do produto ou serviço</label>
-            <input name="nome" required value="{{ p['nome'] if p else '' }}">
+
+            <input name="nome"
+                   required
+                   value="{{ p['nome'] if p else '' }}">
 
             <label>Categoria</label>
+
             <input name="categoria"
                    value="{{ p['categoria'] if p else 'Produtos' }}">
 
             <label>Descrição</label>
-            <textarea name="descricao" rows="4">{{ p['descricao'] if p else '' }}</textarea>
+
+            <textarea name="descricao"
+                      rows="4">{{ p['descricao'] if p else '' }}</textarea>
 
             <label>Preço em reais</label>
-            <input name="preco" type="number" step="0.01" min="0"
-                   required value="{{ p['preco'] if p else '' }}">
+
+            <input name="preco"
+                   type="number"
+                   step="0.01"
+                   min="0"
+                   required
+                   value="{{ p['preco'] if p else '' }}">
 
             <label>Foto do produto</label>
-            <input name="imagem" type="file" accept=".jpg,.jpeg,.png,.webp">
+
+            <input name="imagem"
+                   type="file"
+                   accept=".jpg,.jpeg,.png,.webp">
 
             {% if p and p['imagem'] %}
-            <p>Imagem atual: {{ p['imagem'] }}</p>
+
+                <p>Imagem atual: {{ p['imagem'] }}</p>
+
             {% endif %}
 
-            <button class="botao" type="submit">Salvar produto</button>
+            <button class="botao" type="submit">
+                Salvar produto
+            </button>
+
             <a class="botao botao-secundario"
-               href="{{ url_for('admin_painel') }}">Cancelar</a>
+               href="{{ url_for('admin_painel') }}">
+                Cancelar
+            </a>
+
         </form>
+
     </div>
+
     """
 
     return render_template_string(
-        html, p=p, titulo="Editar produto" if p else "Novo produto",
+        html,
+        p=p,
+        titulo="Editar produto" if p else "Novo produto",
         ouro=COR_OURO
     )
 
@@ -979,23 +1621,41 @@ def formulario_produto(p=None):
 @app.route("/admin/novo", methods=["GET", "POST"])
 @admin_required
 def admin_novo():
+
     if request.method == "POST":
+
         nome = request.form.get("nome", "").strip()
-        categoria = request.form.get("categoria", "Produtos").strip()
-        descricao = request.form.get("descricao", "").strip()
+
+        categoria = request.form.get(
+            "categoria", "Produtos"
+        ).strip()
+
+        descricao = request.form.get(
+            "descricao", ""
+        ).strip()
 
         try:
-            preco = float(request.form.get("preco", "0").replace(",", "."))
+
+            preco = float(
+                request.form.get("preco", "0").replace(",", ".")
+            )
+
         except ValueError:
+
             preco = -1
 
         if not nome or preco < 0:
+
             flash("Confira o nome e o preço.")
+
             return redirect(url_for("admin_novo"))
 
-        imagem = salvar_imagem(request.files.get("imagem"))
+        imagem = salvar_imagem(
+            request.files.get("imagem")
+        )
 
         with conectar() as conn:
+
             conn.execute("""
                 INSERT INTO produtos
                 (nome, categoria, descricao, preco, imagem)
@@ -1003,64 +1663,111 @@ def admin_novo():
             """, (nome, categoria, descricao, preco, imagem))
 
         flash("Produto cadastrado com sucesso!")
+
         return redirect(url_for("admin_painel"))
 
-    return render_site(formulario_produto(), "Novo produto")
+    return render_site(
+        formulario_produto(),
+        "Novo produto"
+    )
 
 
 @app.route("/admin/editar/<int:pid>", methods=["GET", "POST"])
 @admin_required
 def admin_editar(pid):
+
     with conectar() as conn:
+
         p = conn.execute(
-            "SELECT * FROM produtos WHERE id = ?", (pid,)
+            "SELECT * FROM produtos WHERE id = ?",
+            (pid,)
         ).fetchone()
 
     if not p:
         return redirect(url_for("admin_painel"))
 
     if request.method == "POST":
+
         nome = request.form.get("nome", "").strip()
-        categoria = request.form.get("categoria", "Produtos").strip()
-        descricao = request.form.get("descricao", "").strip()
+
+        categoria = request.form.get(
+            "categoria", "Produtos"
+        ).strip()
+
+        descricao = request.form.get(
+            "descricao", ""
+        ).strip()
 
         try:
-            preco = float(request.form.get("preco", "0").replace(",", "."))
+
+            preco = float(
+                request.form.get("preco", "0").replace(",", ".")
+            )
+
         except ValueError:
+
             preco = -1
 
         if not nome or preco < 0:
+
             flash("Confira o nome e o preço.")
-            return redirect(url_for("admin_editar", pid=pid))
+
+            return redirect(
+                url_for("admin_editar", pid=pid)
+            )
 
         imagem = p["imagem"]
+
         novo_arquivo = request.files.get("imagem")
 
         if novo_arquivo and novo_arquivo.filename:
+
             nova_imagem = salvar_imagem(novo_arquivo)
+
             if nova_imagem:
+
                 excluir_imagem(imagem)
+
                 imagem = nova_imagem
 
         with conectar() as conn:
+
             conn.execute("""
                 UPDATE produtos
-                SET nome=?, categoria=?, descricao=?, preco=?, imagem=?
+                SET nome=?, categoria=?, descricao=?,
+                    preco=?, imagem=?
                 WHERE id=?
-            """, (nome, categoria, descricao, preco, imagem, pid))
+            """, (
+                nome,
+                categoria,
+                descricao,
+                preco,
+                imagem,
+                pid
+            ))
 
         flash("Produto atualizado!")
+
         return redirect(url_for("admin_painel"))
 
-    return render_site(formulario_produto(p), "Editar produto")
+    return render_site(
+        formulario_produto(p),
+        "Editar produto"
+    )
 
 
 @app.route("/admin/alternar/<int:pid>")
 @admin_required
 def admin_alternar(pid):
+
     with conectar() as conn:
+
         conn.execute("""
-            UPDATE produtos SET ativo = CASE WHEN ativo = 1 THEN 0 ELSE 1 END
+            UPDATE produtos
+            SET ativo = CASE
+                WHEN ativo = 1 THEN 0
+                ELSE 1
+            END
             WHERE id = ?
         """, (pid,))
 
@@ -1070,97 +1777,173 @@ def admin_alternar(pid):
 @app.route("/admin/excluir/<int:pid>")
 @admin_required
 def admin_excluir(pid):
+
     with conectar() as conn:
+
         p = conn.execute(
-            "SELECT imagem FROM produtos WHERE id = ?", (pid,)
+            "SELECT imagem FROM produtos WHERE id = ?",
+            (pid,)
         ).fetchone()
 
         if p:
+
             excluir_imagem(p["imagem"])
-            conn.execute("DELETE FROM produtos WHERE id = ?", (pid,))
+
+            conn.execute(
+                "DELETE FROM produtos WHERE id = ?",
+                (pid,)
+            )
 
     flash("Produto excluído.")
+
     return redirect(url_for("admin_painel"))
 
+
+# =========================================================
+# ALTERAÇÃO DE SENHA
+# =========================================================
 
 @app.route("/admin/senha", methods=["GET", "POST"])
 @admin_required
 def admin_senha():
+
     if request.method == "POST":
+
         atual = request.form.get("atual", "")
+
         nova = request.form.get("nova", "")
+
         confirmar = request.form.get("confirmar", "")
 
         with conectar() as conn:
+
             admin = conn.execute(
-                "SELECT * FROM administradores WHERE usuario = ?",
+                """
+                SELECT * FROM administradores
+                WHERE usuario = ?
+                """,
                 (session.get("usuario"),)
             ).fetchone()
 
             if not check_password_hash(admin["senha"], atual):
+
                 flash("Senha atual incorreta.")
+
             elif len(nova) < 8:
-                flash("A nova senha deve ter pelo menos 8 caracteres.")
-            elif nova != confirmar:
-                flash("As senhas não conferem.")
-            else:
-                conn.execute(
-                    "UPDATE administradores SET senha = ? WHERE id = ?",
-                    (generate_password_hash(nova), admin["id"])
+
+                flash(
+                    "A nova senha deve ter pelo menos 8 caracteres."
                 )
+
+            elif nova != confirmar:
+
+                flash("As senhas não conferem.")
+
+            else:
+
+                conn.execute(
+                    """
+                    UPDATE administradores
+                    SET senha = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        generate_password_hash(nova),
+                        admin["id"]
+                    )
+                )
+
                 flash("Senha alterada com sucesso!")
+
                 return redirect(url_for("admin_painel"))
 
     html = """
+
     <div class="formulario">
-        <h2 style="color:{{ ouro }}">Alterar senha</h2>
+
+        <h2 style="color:{{ ouro }}">
+            Alterar senha
+        </h2>
 
         <form method="post">
+
             <label>Senha atual</label>
-            <input type="password" name="atual" required>
+
+            <input type="password"
+                   name="atual"
+                   required>
 
             <label>Nova senha</label>
-            <input type="password" name="nova" required>
+
+            <input type="password"
+                   name="nova"
+                   required>
 
             <label>Confirmar nova senha</label>
-            <input type="password" name="confirmar" required>
 
-            <button class="botao">Alterar senha</button>
+            <input type="password"
+                   name="confirmar"
+                   required>
+
+            <button class="botao">
+                Alterar senha
+            </button>
+
         </form>
+
     </div>
+
     """
 
     return render_site(
-        render_template_string(html, ouro=COR_OURO),
+        render_template_string(
+            html,
+            ouro=COR_OURO
+        ),
         "Alterar senha"
     )
 
 
 @app.route("/admin/sair")
 def admin_sair():
+
     session.clear()
+
     return redirect(url_for("inicio"))
 
 
 # =========================================================
-# ERROS E EXECUÇÃO
+# TRATAMENTO DE ERROS
 # =========================================================
 
 @app.errorhandler(413)
 def arquivo_grande(e):
+
     flash("A imagem ultrapassa o limite de 5 MB.")
-    return redirect(request.referrer or url_for("inicio"))
+
+    return redirect(
+        request.referrer or url_for("inicio")
+    )
 
 
 @app.errorhandler(404)
 def pagina_nao_encontrada(e):
+
     return render_site(
-        "<h2>Página não encontrada.</h2><a href='/'>Voltar ao início</a>",
+        """
+        <h2 class="secao">Página não encontrada.</h2>
+        <a class="botao" href="/">Voltar ao início</a>
+        """,
         "Página não encontrada"
     ), 404
 
 
+# =========================================================
+# EXECUÇÃO
+# =========================================================
+
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 8550)),
