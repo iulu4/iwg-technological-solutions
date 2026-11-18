@@ -1,7 +1,7 @@
-
 import os
-import sqlite3
+import re
 import uuid
+import sqlite3
 import secrets
 from pathlib import Path
 from functools import wraps
@@ -16,7 +16,7 @@ from werkzeug.utils import secure_filename
 
 
 # =========================================================
-# CONFIGURAÇÕES IWG
+# CONFIGURACOES IWG
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,7 +37,6 @@ app.secret_key = os.environ.get(
     "IWG_SECRET_KEY",
     "iwg-chave-temporaria-trocar-antes-de-publicar"
 )
-
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 AZUL_FUNDO = "#020526"
@@ -68,7 +67,7 @@ IMAGEM_BANNER = (
 
 
 # =========================================================
-# BANCO DE DADOS E MIGRAÇÕES
+# BANCO DE DADOS
 # =========================================================
 
 def conectar():
@@ -78,9 +77,23 @@ def conectar():
     return conn
 
 
+def migrar_colunas(conn, tabela, colunas):
+    existentes = {
+        row["name"]
+        for row in conn.execute(
+            f"PRAGMA table_info({tabela})"
+        ).fetchall()
+    }
+
+    for nome, tipo in colunas.items():
+        if nome not in existentes:
+            conn.execute(
+                f"ALTER TABLE {tabela} ADD COLUMN {nome} {tipo}"
+            )
+
+
 def iniciar_banco():
     with conectar() as conn:
-
         conn.execute("""
             CREATE TABLE IF NOT EXISTS produtos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,22 +102,16 @@ def iniciar_banco():
                 descricao TEXT DEFAULT '',
                 preco REAL DEFAULT 0,
                 imagem TEXT DEFAULT '',
-                ativo INTEGER DEFAULT 1
+                ativo INTEGER DEFAULT 1,
+                estoque INTEGER DEFAULT NULL
             )
         """)
 
-        # Adiciona estoque sem apagar produtos antigos.
-        colunas = [
-            linha["name"]
-            for linha in conn.execute(
-                "PRAGMA table_info(produtos)"
-            ).fetchall()
-        ]
-
-        if "estoque" not in colunas:
-            conn.execute(
-                "ALTER TABLE produtos ADD COLUMN estoque INTEGER DEFAULT NULL"
-            )
+        migrar_colunas(conn, "produtos", {
+            "estoque": "INTEGER DEFAULT NULL",
+            "ativo": "INTEGER DEFAULT 1",
+            "imagem": "TEXT DEFAULT ''"
+        })
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS administradores (
@@ -124,6 +131,18 @@ def iniciar_banco():
                 data_criacao TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        migrar_colunas(conn, "pedidos", {
+            "telefone": "TEXT DEFAULT ''",
+            "cep": "TEXT DEFAULT ''",
+            "rua": "TEXT DEFAULT ''",
+            "numero": "TEXT DEFAULT ''",
+            "complemento": "TEXT DEFAULT ''",
+            "bairro": "TEXT DEFAULT ''",
+            "cidade": "TEXT DEFAULT ''",
+            "estado": "TEXT DEFAULT ''",
+            "codigo_rastreamento": "TEXT DEFAULT ''"
+        })
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pedido_itens (
@@ -182,7 +201,7 @@ iniciar_banco()
 
 
 # =========================================================
-# FUNÇÕES AUXILIARES
+# FUNCOES AUXILIARES
 # =========================================================
 
 def dinheiro(valor):
@@ -200,10 +219,8 @@ def imagem_produto(produto):
             "static",
             filename="produtos/" + produto["imagem"]
         )
-
     return IMAGENS_PRODUTOS.get(
-        produto["id"],
-        IMAGEM_BANNER
+        produto["id"], IMAGEM_BANNER
     )
 
 
@@ -223,7 +240,6 @@ def salvar_imagem(arquivo):
 
     nome = f"{uuid.uuid4().hex}.{extensao}"
     arquivo.save(UPLOAD_DIR / nome)
-
     return nome
 
 
@@ -274,11 +290,12 @@ def quantidade_carrinho():
     )
 
 
-def estoque_disponivel(produto, quantidade_atual=0):
-    if produto["estoque"] is None:
-        return True
-
-    return produto["estoque"] >= quantidade_atual
+def endereco_pedido(pedido):
+    return (
+        f"{pedido['rua']}, {pedido['numero']} "
+        f"{pedido['complemento']} - {pedido['bairro']}, "
+        f"{pedido['cidade']}/{pedido['estado']} - CEP {pedido['cep']}"
+    )
 
 
 # =========================================================
@@ -294,30 +311,22 @@ BASE_HTML = """
 <meta name="theme-color" content="#020526">
 <meta name="description" content="IWG Technological Solutions. Tecnologia, eletrônicos, importações e desenvolvimento de software.">
 <title>{{ titulo }} | IWG Technological Solutions</title>
-
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://images.unsplash.com">
-
 <style>
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-
 body {
     margin: 0;
     background: {{ fundo }};
     color: white;
     font-family: Arial, Helvetica, sans-serif;
 }
-
 a { color: inherit; text-decoration: none; }
-
 header {
     text-align: center;
     padding: 35px 20px;
     background-color: {{ card }};
     border-bottom: 1px solid {{ borda }};
 }
-
 .avatar {
     width: 140px;
     height: 140px;
@@ -331,13 +340,7 @@ header {
     overflow: hidden;
     box-shadow: 0 4px 20px rgba(247,192,74,.25);
 }
-
-.avatar img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
 h1 {
     color: {{ ouro }};
     font-size: 20px;
@@ -345,16 +348,13 @@ h1 {
     text-transform: uppercase;
     letter-spacing: .5px;
 }
-
 .sub-titulo {
     color: #9CA3AF;
     font-size: 12px;
     font-style: italic;
     margin-bottom: 6px;
 }
-
 .sub-marca { color: #9CA3AF; font-size: 11px; }
-
 nav {
     display: flex;
     justify-content: center;
@@ -368,25 +368,17 @@ nav {
     top: 0;
     z-index: 100;
 }
-
 nav a {
     color: {{ ouro }};
     font-size: 13px;
     padding: 9px 12px;
 }
-
 nav a:hover {
     background: {{ ouro }};
     color: #020526;
     border-radius: 6px;
 }
-
-.container {
-    width: 92%;
-    max-width: 1200px;
-    margin: 30px auto;
-}
-
+.container { width: 92%; max-width: 1200px; margin: 30px auto; }
 .banner {
     min-height: 430px;
     display: flex;
@@ -398,28 +390,24 @@ nav a:hover {
     border-radius: 18px;
     margin-bottom: 55px;
     background:
-        linear-gradient(90deg, rgba(2,5,38,.96), rgba(2,5,38,.75), rgba(2,5,38,.65)),
+        linear-gradient(90deg, rgba(2,5,38,.96), rgba(2,5,38,.75)),
         url("{{ imagem_banner }}");
     background-size: cover;
     background-position: center;
 }
-
 .banner-conteudo { max-width: 850px; }
 .banner-etiqueta {
     color: {{ ouro }};
     font-size: 12px;
     font-weight: bold;
     letter-spacing: 3px;
-    text-transform: uppercase;
 }
-
 .banner h2 {
     color: {{ ouro }};
     font-size: clamp(30px, 5vw, 52px);
     line-height: 1.15;
     margin: 20px 0;
 }
-
 .banner p {
     color: #E5E7EB;
     line-height: 1.8;
@@ -427,7 +415,6 @@ nav a:hover {
     max-width: 700px;
     margin: 0 auto 25px;
 }
-
 .botao {
     display: inline-block;
     background: {{ ouro }};
@@ -438,99 +425,50 @@ nav a:hover {
     border-radius: 7px;
     cursor: pointer;
     margin: 5px;
-    transition: .3s;
     font-size: 13px;
 }
-
-.botao:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(247,192,74,.25);
-}
-
 .botao-secundario {
     background: transparent;
     color: {{ ouro }};
     border: 1px solid {{ ouro }};
 }
-
-.secao {
-    color: {{ ouro }};
-    font-size: 25px;
-    margin: 45px 0 20px;
-}
-
-.subsecao {
-    color: #AEB6D2;
-    line-height: 1.7;
-    margin-bottom: 25px;
-}
-
+.secao { color: {{ ouro }}; font-size: 25px; margin: 45px 0 20px; }
+.subsecao { color: #AEB6D2; line-height: 1.7; margin-bottom: 25px; }
 .grade {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
     gap: 22px;
 }
-
 .produto {
     background: {{ card }};
     border: 1px solid {{ borda }};
     border-radius: 13px;
     overflow: hidden;
-    transition: .3s;
 }
-
-.produto:hover {
-    transform: translateY(-5px);
-    border-color: {{ ouro }};
-}
-
 .produto img {
     width: 100%;
     height: 210px;
     object-fit: cover;
     background: #101641;
 }
-
 .produto-conteudo { padding: 17px; }
-
 .categoria {
     color: {{ ouro }};
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 1px;
 }
-
-.produto h3 {
-    color: {{ ouro }};
-    font-size: 17px;
-    line-height: 1.4;
-}
-
-.produto p {
-    color: #C4C8D5;
-    line-height: 1.6;
-    font-size: 13px;
-    min-height: 42px;
-}
-
-.preco {
-    font-size: 21px;
-    color: {{ ouro }};
-    font-weight: bold;
-    margin: 15px 0;
-}
-
+.produto h3 { color: {{ ouro }}; font-size: 17px; line-height: 1.4; }
+.produto p { color: #C4C8D5; line-height: 1.6; font-size: 13px; }
+.preco { font-size: 21px; color: {{ ouro }}; font-weight: bold; margin: 15px 0; }
 .servico {
     background: linear-gradient(145deg, #0A0E45, #111A55);
     border: 1px solid {{ borda }};
     border-radius: 13px;
     padding: 25px;
 }
-
-.servico-icone { font-size: 35px; }
 .servico h3 { color: {{ ouro }}; font-size: 18px; }
 .servico p { color: #C4C8D5; line-height: 1.7; font-size: 14px; }
-
 .sobre {
     background: linear-gradient(135deg, #0A0E45, #080C38);
     border: 1px solid {{ borda }};
@@ -541,14 +479,7 @@ nav a:hover {
     color: #D1D5DB;
 }
 .sobre h2 { color: {{ ouro }}; }
-
-.filtros {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 9px;
-    margin-bottom: 25px;
-}
-
+.filtros { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 25px; }
 .filtros a {
     padding: 9px 15px;
     border: 1px solid {{ borda }};
@@ -556,21 +487,15 @@ nav a:hover {
     color: white;
     font-size: 13px;
 }
-
-.filtros a:hover, .filtros a.ativo {
-    background: {{ ouro }};
-    color: #020526;
-}
-
+.filtros a:hover, .filtros a.ativo { background: {{ ouro }}; color: #020526; }
 .formulario {
     background: {{ card }};
     border: 1px solid {{ borda }};
     padding: 24px;
     border-radius: 12px;
-    max-width: 700px;
+    max-width: 800px;
     margin: 25px auto;
 }
-
 input, textarea, select {
     display: block;
     width: 100%;
@@ -581,24 +506,15 @@ input, textarea, select {
     border: 1px solid {{ borda }};
     border-radius: 6px;
 }
-
 label { color: {{ ouro }}; }
-
 table {
     width: 100%;
     border-collapse: collapse;
     margin: 20px 0;
     background: {{ card }};
 }
-
-td, th {
-    border-bottom: 1px solid {{ borda }};
-    padding: 12px;
-    text-align: left;
-}
-
+td, th { border-bottom: 1px solid {{ borda }}; padding: 12px; text-align: left; }
 th { color: {{ ouro }}; }
-
 .aviso {
     padding: 15px;
     background: #111A55;
@@ -608,7 +524,6 @@ th { color: {{ ouro }}; }
     font-size: 13px;
     line-height: 1.6;
 }
-
 .flash {
     background: #182653;
     border: 1px solid {{ ouro }};
@@ -617,26 +532,19 @@ th { color: {{ ouro }}; }
     margin: 12px 0;
     color: white;
 }
-
 .cartao-indicador {
     background: {{ card }};
     border: 1px solid {{ borda }};
     border-radius: 12px;
     padding: 22px;
 }
-
-.cartao-indicador span {
-    color: #AEB6D2;
-    font-size: 13px;
-}
-
+.cartao-indicador span { color: #AEB6D2; font-size: 13px; }
 .cartao-indicador strong {
     display: block;
     color: {{ ouro }};
     font-size: 30px;
     margin-top: 10px;
 }
-
 .badge-status {
     display: inline-block;
     padding: 5px 9px;
@@ -645,16 +553,8 @@ th { color: {{ ouro }}; }
     color: {{ ouro }};
     font-size: 11px;
 }
-
-.acoes {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-}
-
+.acoes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .acoes form { margin: 0; }
-
 footer {
     text-align: center;
     padding: 40px 15px;
@@ -665,10 +565,8 @@ footer {
     line-height: 1.9;
     background: #05082C;
 }
-
 footer strong { color: {{ ouro }}; font-size: 16px; }
 footer a { color: {{ ouro }}; margin: 0 5px; }
-
 @media(max-width: 700px) {
     header { padding: 25px 10px; }
     .container { width: 94%; }
@@ -683,9 +581,7 @@ footer a { color: {{ ouro }}; margin: 0 5px; }
 }
 </style>
 </head>
-
 <body>
-
 <header>
     <div class="avatar">
         <img src="/arquivos/logo.jpg" alt="Logo IWG"
@@ -699,7 +595,6 @@ footer a { color: {{ ouro }}; margin: 0 5px; }
         IWG Technological Solutions • Catálogo Oficial
     </div>
 </header>
-
 <nav>
     <a href="{{ url_for('inicio') }}">Início</a>
     <a href="{{ url_for('inicio') }}#catalogo">Catálogo</a>
@@ -708,19 +603,14 @@ footer a { color: {{ ouro }}; margin: 0 5px; }
     <a href="{{ url_for('carrinho') }}">Carrinho ({{ quantidade_carrinho }})</a>
     <a href="https://wa.me/{{ whatsapp }}" target="_blank">WhatsApp</a>
 </nav>
-
 <div class="container">
-
 {% with mensagens = get_flashed_messages() %}
     {% for mensagem in mensagens %}
         <div class="flash">{{ mensagem }}</div>
     {% endfor %}
 {% endwith %}
-
 {{ conteudo|safe }}
-
 </div>
-
 <footer>
     <p><strong>IWG TECHNOLOGICAL SOLUTIONS</strong></p>
     <p>Tecnologia • Eletrônicos • Importações • Desenvolvimento de Software</p>
@@ -733,7 +623,6 @@ footer a { color: {{ ouro }}; margin: 0 5px; }
     <p>© IWG Technological Solutions</p>
     <a href="{{ url_for('admin_login') }}">Área administrativa</a>
 </footer>
-
 </body>
 </html>
 """
@@ -758,7 +647,7 @@ def render_site(conteudo, titulo="Início"):
 
 
 # =========================================================
-# PÁGINA INICIAL
+# PAGINA INICIAL E CATALOGO
 # =========================================================
 
 @app.route("/")
@@ -767,10 +656,8 @@ def inicio():
 
     with conectar() as conn:
         categorias = conn.execute("""
-            SELECT DISTINCT categoria
-            FROM produtos
-            WHERE ativo = 1
-            ORDER BY categoria
+            SELECT DISTINCT categoria FROM produtos
+            WHERE ativo = 1 ORDER BY categoria
         """).fetchall()
 
         if categoria:
@@ -782,16 +669,13 @@ def inicio():
         else:
             produtos = conn.execute("""
                 SELECT * FROM produtos
-                WHERE ativo = 1
-                ORDER BY id DESC
+                WHERE ativo = 1 ORDER BY id DESC
             """).fetchall()
 
     html = """
     <section class="banner">
         <div class="banner-conteudo">
-            <div class="banner-etiqueta">
-                Tecnologia • Inovação • Soluções
-            </div>
+            <div class="banner-etiqueta">Tecnologia • Inovação • Soluções</div>
             <h2>Tecnologia que transforma ideias em soluções.</h2>
             <p>
                 Bem-vindo à IWG Technological Solutions.
@@ -810,23 +694,19 @@ def inicio():
         <p class="subsecao">Tecnologia aplicada às necessidades de pessoas e empresas.</p>
         <div class="grade">
             <div class="servico">
-                <div class="servico-icone">💻</div>
-                <h3>Desenvolvimento de Software</h3>
+                <h3>💻 Desenvolvimento de Software</h3>
                 <p>Criação de sistemas, aplicativos, plataformas e soluções personalizadas.</p>
             </div>
             <div class="servico">
-                <div class="servico-icone">⚙️</div>
-                <h3>Automação e Inteligência</h3>
+                <h3>⚙️ Automação e Inteligência</h3>
                 <p>Automação de tarefas, integração de processos e ferramentas digitais.</p>
             </div>
             <div class="servico">
-                <div class="servico-icone">🌐</div>
-                <h3>Consultoria em Tecnologia</h3>
+                <h3>🌐 Consultoria em Tecnologia</h3>
                 <p>Arquitetura de sistemas, planejamento e orientação tecnológica.</p>
             </div>
             <div class="servico">
-                <div class="servico-icone">📱</div>
-                <h3>Eletrônicos e Importações</h3>
+                <h3>📱 Eletrônicos e Importações</h3>
                 <p>Produtos, acessórios e soluções tecnológicas selecionadas.</p>
             </div>
         </div>
@@ -835,7 +715,6 @@ def inicio():
     <section id="catalogo">
         <h2 class="secao">Catálogo IWG</h2>
         <p class="subsecao">Conheça nossos produtos, serviços e soluções digitais.</p>
-
         <div class="filtros">
             <a class="{{ 'ativo' if not categoria else '' }}"
                href="{{ url_for('inicio') }}">Todos</a>
@@ -846,40 +725,23 @@ def inicio():
                 </a>
             {% endfor %}
         </div>
-
         <div class="grade">
         {% for p in produtos %}
             <article class="produto">
-                <img src="{{ imagem_produto(p) }}"
-                     alt="{{ p['nome'] }}" loading="lazy"
-                     onerror="this.style.display='none'">
+                <a href="{{ url_for('produto_detalhe', pid=p['id']) }}">
+                    <img src="{{ imagem_produto(p) }}" alt="{{ p['nome'] }}">
+                </a>
                 <div class="produto-conteudo">
                     <span class="categoria">{{ p['categoria'] }}</span>
                     <h3>{{ p['nome'] }}</h3>
                     <p>{{ p['descricao'] }}</p>
                     <div class="preco">{{ dinheiro(p['preco']) }}</div>
-
-                    {% if p['estoque'] is none %}
-                        <span class="badge-status">Disponibilidade sob consulta</span>
-                    {% elif p['estoque'] > 0 %}
-                        <span class="badge-status">Em estoque: {{ p['estoque'] }}</span>
-                    {% else %}
-                        <span class="badge-status">Indisponível</span>
+                    {% if p['estoque'] is not none %}
+                        <p>Estoque: {{ p['estoque'] }}</p>
                     {% endif %}
-
-                    <br><br>
-                    <a class="botao"
-                       href="{{ url_for('produto', pid=p['id']) }}">Ver detalhes</a>
-
-                    {% if p['estoque'] is none or p['estoque'] > 0 %}
-                    <form method="post"
-                          action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
-                        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-                        <button class="botao botao-secundario" type="submit">
-                            Adicionar ao carrinho
-                        </button>
-                    </form>
-                    {% endif %}
+                    <a class="botao" href="{{ url_for('produto_detalhe', pid=p['id']) }}">
+                        Ver produto
+                    </a>
                 </div>
             </article>
         {% else %}
@@ -888,228 +750,199 @@ def inicio():
         </div>
     </section>
 
-    <section id="sobre" class="sobre">
+    <section class="sobre" id="sobre">
         <h2>Sobre a IWG Technological Solutions</h2>
         <p>
-            A IWG Technological Solutions atua na área de tecnologia,
-            desenvolvimento de software, automação, eletrônicos e importações.
+            A IWG Technological Solutions atua com tecnologia,
+            desenvolvimento de software, automação, consultoria,
+            eletrônicos e soluções digitais.
         </p>
         <p>
-            Nosso objetivo é aproximar pessoas e empresas de soluções
-            tecnológicas modernas, oferecendo ferramentas, produtos e serviços.
+            Nosso compromisso é oferecer inovação, qualidade
+            e atendimento próximo aos nossos clientes.
         </p>
-        <a class="botao" href="https://wa.me/{{ whatsapp }}">Entre em contato</a>
     </section>
-
-    <div class="aviso">
-        Imagens ilustrativas e valores sujeitos à disponibilidade.
-        Consulte nossa equipe antes de concluir sua compra.
-    </div>
     """
 
-    conteudo = render_template_string(
-        html,
-        produtos=produtos,
-        categorias=categorias,
-        dinheiro=dinheiro,
-        imagem_produto=imagem_produto,
-        categoria=categoria,
-        whatsapp=WHATSAPP
+    return render_site(
+        render_template_string(
+            html,
+            produtos=produtos,
+            categorias=categorias,
+            categoria=categoria,
+            dinheiro=dinheiro,
+            imagem_produto=imagem_produto,
+            whatsapp=WHATSAPP
+        )
     )
 
-    return render_site(conteudo)
-
-
-# =========================================================
-# DETALHES DO PRODUTO
-# =========================================================
 
 @app.route("/produto/<int:pid>")
-def produto(pid):
+def produto_detalhe(pid):
     with conectar() as conn:
-        p = conn.execute("""
-            SELECT * FROM produtos
-            WHERE id = ? AND ativo = 1
-        """, (pid,)).fetchone()
+        produto = conn.execute(
+            "SELECT * FROM produtos WHERE id=? AND ativo=1",
+            (pid,)
+        ).fetchone()
 
-    if not p:
-        return redirect(url_for("inicio"))
+    if not produto:
+        abort(404)
 
     html = """
-    <div class="formulario">
-        <img style="width:100%;max-height:350px;object-fit:contain"
-             src="{{ imagem_produto(p) }}" alt="{{ p['nome'] }}">
-        <h2 style="color:{{ ouro }}">{{ p['nome'] }}</h2>
-        <p>{{ p['descricao'] }}</p>
-        <p>Categoria: {{ p['categoria'] }}</p>
-        <div class="preco">{{ dinheiro(p['preco']) }}</div>
-
-        {% if p['estoque'] is none %}
-            <p>Disponibilidade sob consulta.</p>
-        {% elif p['estoque'] > 0 %}
-            <p>Quantidade disponível: {{ p['estoque'] }}</p>
-        {% else %}
-            <p>Produto indisponível no momento.</p>
-        {% endif %}
-
-        {% if p['estoque'] is none or p['estoque'] > 0 %}
-        <form method="post"
-              action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-            <button class="botao">Adicionar ao carrinho</button>
-        </form>
-        {% endif %}
-
-        <a class="botao botao-secundario" href="{{ url_for('inicio') }}">
-            Voltar ao catálogo
-        </a>
+    <h2 class="secao">{{ p['nome'] }}</h2>
+    <div class="grade">
+        <div class="produto">
+            <img src="{{ imagem_produto(p) }}" alt="{{ p['nome'] }}">
+        </div>
+        <div class="produto-conteudo">
+            <span class="categoria">{{ p['categoria'] }}</span>
+            <p>{{ p['descricao'] }}</p>
+            <div class="preco">{{ dinheiro(p['preco']) }}</div>
+            {% if p['estoque'] is not none %}
+                <p>Disponível: {{ p['estoque'] }}</p>
+            {% endif %}
+            <form method="post" action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
+                <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                <label>Quantidade</label>
+                <input type="number" name="quantidade" value="1" min="1" required>
+                <button class="botao">Adicionar ao carrinho</button>
+            </form>
+            <a class="botao botao-secundario" href="{{ url_for('inicio') }}">
+                Voltar ao catálogo
+            </a>
+        </div>
     </div>
     """
 
-    conteudo = render_template_string(
-        html,
-        p=p,
-        dinheiro=dinheiro,
-        ouro=COR_OURO,
-        imagem_produto=imagem_produto
+    return render_site(
+        render_template_string(
+            html,
+            p=produto,
+            imagem_produto=imagem_produto,
+            dinheiro=dinheiro
+        ),
+        produto["nome"]
     )
-
-    return render_site(conteudo, p["nome"])
 
 
 # =========================================================
 # CARRINHO
 # =========================================================
 
-@app.route("/adicionar/<int:pid>", methods=["POST"])
+@app.route("/adicionar-carrinho/<int:pid>", methods=["POST"])
 def adicionar_carrinho(pid):
     validar_csrf()
 
-    with conectar() as conn:
-        p = conn.execute("""
-            SELECT * FROM produtos
-            WHERE id = ? AND ativo = 1
-        """, (pid,)).fetchone()
+    try:
+        quantidade = int(request.form.get("quantidade", 1))
+    except ValueError:
+        quantidade = 1
 
-    if not p:
+    if quantidade < 1 or quantidade > 99:
+        flash("Quantidade inválida.")
+        return redirect(url_for("inicio"))
+
+    with conectar() as conn:
+        produto = conn.execute(
+            "SELECT * FROM produtos WHERE id=? AND ativo=1",
+            (pid,)
+        ).fetchone()
+
+    if not produto:
         flash("Produto não encontrado.")
         return redirect(url_for("inicio"))
 
     carrinho = session.get("carrinho", {})
-    chave = str(pid)
-    quantidade_atual = int(carrinho.get(chave, 0))
+    atual = int(carrinho.get(str(pid), 0))
+    nova = atual + quantidade
 
-    if p["estoque"] is not None and quantidade_atual >= p["estoque"]:
-        flash("Quantidade máxima disponível já está no carrinho.")
-        return redirect(request.referrer or url_for("inicio"))
+    if produto["estoque"] is not None and nova > produto["estoque"]:
+        flash("Quantidade maior que o estoque disponível.")
+        return redirect(url_for("produto_detalhe", pid=pid))
 
-    carrinho[chave] = quantidade_atual + 1
+    carrinho[str(pid)] = nova
     session["carrinho"] = carrinho
-
     flash("Produto adicionado ao carrinho!")
-    return redirect(request.referrer or url_for("inicio"))
+    return redirect(url_for("carrinho"))
 
 
 @app.route("/carrinho")
 def carrinho():
+    carrinho_atual = session.get("carrinho", {})
     itens = []
     total = 0
-    ids = session.get("carrinho", {})
 
     with conectar() as conn:
-        for pid, quantidade in ids.items():
-            p = conn.execute("""
-                SELECT * FROM produtos
-                WHERE id = ? AND ativo = 1
-            """, (pid,)).fetchone()
+        for pid, quantidade in carrinho_atual.items():
+            produto = conn.execute(
+                "SELECT * FROM produtos WHERE id=? AND ativo=1",
+                (pid,)
+            ).fetchone()
 
-            if p:
-                quantidade = int(quantidade)
-                subtotal = p["preco"] * quantidade
-                total += subtotal
+            if produto:
+                subtotal = produto["preco"] * int(quantidade)
                 itens.append({
-                    "produto": p,
-                    "quantidade": quantidade,
+                    "produto": produto,
+                    "quantidade": int(quantidade),
                     "subtotal": subtotal
                 })
+                total += subtotal
 
     html = """
     <h2 class="secao">Meu carrinho</h2>
-
     {% if itens %}
     <div class="tabela-responsiva">
     <table>
-        <tr><th>Produto</th><th>Qtd.</th><th>Subtotal</th><th></th></tr>
+        <tr><th>Produto</th><th>Quantidade</th><th>Subtotal</th><th>Ação</th></tr>
         {% for item in itens %}
         <tr>
             <td>{{ item.produto['nome'] }}</td>
             <td>{{ item.quantidade }}</td>
             <td>{{ dinheiro(item.subtotal) }}</td>
             <td>
-                <a href="{{ url_for('remover_carrinho', pid=item.produto['id']) }}">
-                    Remover
-                </a>
+                <form method="post" action="{{ url_for('remover_carrinho', pid=item.produto['id']) }}">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                    <button class="botao botao-secundario">Remover</button>
+                </form>
             </td>
         </tr>
         {% endfor %}
     </table>
     </div>
-
-    <h2 style="color:{{ ouro }}">Total: {{ dinheiro(total) }}</h2>
-
-    <form method="post" action="{{ url_for('finalizar_pedido') }}">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <label>Seu nome</label>
-        <input name="nome" required placeholder="Digite seu nome">
-        <label>Observações do pedido</label>
-        <textarea name="observacoes" rows="3"></textarea>
-        <button class="botao" type="submit">Finalizar pelo WhatsApp</button>
-    </form>
+    <h2 class="preco">Total: {{ dinheiro(total) }}</h2>
+    <a class="botao" href="{{ url_for('checkout') }}">Continuar para identificação e entrega</a>
     {% else %}
-        <p>Seu carrinho está vazio.</p>
+    <p>Seu carrinho está vazio.</p>
     {% endif %}
-
-    <a class="botao botao-secundario" href="{{ url_for('inicio') }}">
-        Continuar comprando
-    </a>
+    <a class="botao botao-secundario" href="{{ url_for('inicio') }}">Voltar ao catálogo</a>
     """
 
-    conteudo = render_template_string(
-        html,
-        itens=itens,
-        total=total,
-        dinheiro=dinheiro,
-        ouro=COR_OURO
+    return render_site(
+        render_template_string(
+            html, itens=itens, total=total, dinheiro=dinheiro
+        ),
+        "Carrinho"
     )
-
-    return render_site(conteudo, "Carrinho")
 
 
 @app.route("/remover-carrinho/<int:pid>", methods=["POST"])
 def remover_carrinho(pid):
     validar_csrf()
-    carrinho = session.get("carrinho", {})
-    carrinho.pop(str(pid), None)
-    session["carrinho"] = carrinho
+    carrinho_atual = session.get("carrinho", {})
+    carrinho_atual.pop(str(pid), None)
+    session["carrinho"] = carrinho_atual
+    flash("Produto removido.")
     return redirect(url_for("carrinho"))
 
 
 # =========================================================
-# FINALIZAÇÃO E REGISTRO DO PEDIDO
+# CHECKOUT
 # =========================================================
 
-@app.route("/finalizar", methods=["POST"])
-def finalizar_pedido():
-    validar_csrf()
-
-    nome = request.form.get("nome", "").strip()
-    observacoes = request.form.get("observacoes", "").strip()
-
-    if not nome:
-        flash("Informe seu nome.")
-        return redirect(url_for("carrinho"))
-
+@app.route("/checkout", methods=["GET", "POST"])
+def checkout():
     carrinho_atual = session.get("carrinho", {})
+
     if not carrinho_atual:
         flash("Seu carrinho está vazio.")
         return redirect(url_for("carrinho"))
@@ -1119,86 +952,228 @@ def finalizar_pedido():
 
     with conectar() as conn:
         for pid, quantidade in carrinho_atual.items():
-            p = conn.execute("""
-                SELECT * FROM produtos
-                WHERE id = ? AND ativo = 1
-            """, (pid,)).fetchone()
+            produto = conn.execute(
+                "SELECT * FROM produtos WHERE id=? AND ativo=1",
+                (pid,)
+            ).fetchone()
 
-            if not p:
+            if not produto:
                 continue
 
             quantidade = int(quantidade)
 
-            if p["estoque"] is not None and quantidade > p["estoque"]:
-                flash(
-                    f"Estoque insuficiente para {p['nome']}. "
-                    "Atualize seu carrinho ou fale conosco."
-                )
+            if produto["estoque"] is not None and quantidade > produto["estoque"]:
+                flash(f"Estoque insuficiente para {produto['nome']}.")
                 return redirect(url_for("carrinho"))
 
-            subtotal = p["preco"] * quantidade
-            total += subtotal
-
+            subtotal = produto["preco"] * quantidade
             itens.append({
-                "id": p["id"],
-                "nome": p["nome"],
+                "produto": produto,
                 "quantidade": quantidade,
-                "preco": p["preco"],
                 "subtotal": subtotal
             })
+            total += subtotal
 
-        if not itens:
-            flash("Não foi possível localizar os produtos do pedido.")
-            return redirect(url_for("carrinho"))
+    if not itens:
+        flash("Não há produtos disponíveis no carrinho.")
+        return redirect(url_for("carrinho"))
 
-        cursor = conn.execute("""
-            INSERT INTO pedidos (cliente, observacoes, total, status)
-            VALUES (?, ?, ?, 'Recebido')
-        """, (nome, observacoes, total))
+    if request.method == "POST":
+        validar_csrf()
 
-        pedido_id = cursor.lastrowid
+        nome = request.form.get("nome", "").strip()
+        telefone = re.sub(
+            r"\D", "", request.form.get("telefone", "")
+        )
+        cpf = re.sub(r"\D", "", request.form.get("cpf", ""))
+        cep = re.sub(r"\D", "", request.form.get("cep", ""))
+        rua = request.form.get("rua", "").strip()
+        numero = request.form.get("numero", "").strip()
+        complemento = request.form.get("complemento", "").strip()
+        bairro = request.form.get("bairro", "").strip()
+        cidade = request.form.get("cidade", "").strip()
+        estado = request.form.get("estado", "").strip().upper()
+        observacoes = request.form.get("observacoes", "").strip()
 
-        for item in itens:
-            conn.execute("""
-                INSERT INTO pedido_itens
-                (pedido_id, produto_id, nome_produto,
-                 quantidade, preco_unitario, subtotal)
-                VALUES (?, ?, ?, ?, ?, ?)
+        if not nome or len(nome) < 3:
+            flash("Informe seu nome completo.")
+            return redirect(url_for("checkout"))
+
+        if not 10 <= len(telefone) <= 13:
+            flash("Informe um telefone ou WhatsApp válido.")
+            return redirect(url_for("checkout"))
+
+        if len(cpf) != 11 or cpf == cpf[0] * 11:
+            flash("Informe um CPF com 11 números válido.")
+            return redirect(url_for("checkout"))
+
+        # Validação dos dígitos verificadores do CPF.
+        numeros = [int(n) for n in cpf]
+        soma = sum(numeros[i] * (10 - i) for i in range(9))
+        digito1 = (soma * 10) % 11
+        digito1 = 0 if digito1 == 10 else digito1
+
+        soma = sum(numeros[i] * (11 - i) for i in range(10))
+        digito2 = (soma * 10) % 11
+        digito2 = 0 if digito2 == 10 else digito2
+
+        if numeros[9] != digito1 or numeros[10] != digito2:
+            flash("O CPF informado não passou na validação.")
+            return redirect(url_for("checkout"))
+
+        if (
+            len(cep) != 8 or not rua or not numero
+            or not bairro or not cidade or len(estado) != 2
+        ):
+            flash("Preencha corretamente todos os campos obrigatórios do endereço.")
+            return redirect(url_for("checkout"))
+
+        with conectar() as conn:
+            cursor = conn.execute("""
+                INSERT INTO pedidos (
+                    cliente, observacoes, total, status,
+                    telefone, cep, rua, numero, complemento,
+                    bairro, cidade, estado
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                pedido_id,
-                item["id"],
-                item["nome"],
-                item["quantidade"],
-                item["preco"],
-                item["subtotal"]
+                nome, observacoes, total,
+                "Aguardando confirmação no WhatsApp",
+                telefone, cep, rua, numero, complemento,
+                bairro, cidade, estado
             ))
 
-    linhas = [
-        f"{item['nome']} - {item['quantidade']} unidade(s) "
-        f"- {dinheiro(item['subtotal'])}"
-        for item in itens
-    ]
+            pedido_id = cursor.lastrowid
 
-    mensagem = (
-        "Olá! Gostaria de fazer um pedido na IWG.\\n\\n"
-        f"Pedido: #{pedido_id}\\n"
-        f"Cliente: {nome}\\n\\n"
-        + "\\n".join(linhas)
-        + f"\\n\\nTotal: {dinheiro(total)}"
-        + f"\\nObservações: {observacoes}"
+            for item in itens:
+                produto = item["produto"]
+                quantidade = item["quantidade"]
+
+                conn.execute("""
+                    INSERT INTO pedido_itens (
+                        pedido_id, produto_id, nome_produto,
+                        quantidade, preco_unitario, subtotal
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    pedido_id,
+                    produto["id"],
+                    produto["nome"],
+                    quantidade,
+                    produto["preco"],
+                    item["subtotal"]
+                ))
+
+                if produto["estoque"] is not None:
+                    conn.execute("""
+                        UPDATE produtos
+                        SET estoque = estoque - ?
+                        WHERE id = ?
+                    """, (quantidade, produto["id"]))
+
+        endereco = (
+            f"{rua}, {numero}, {complemento}, {bairro}, "
+            f"{cidade}/{estado}, CEP {cep}"
+        )
+
+        mensagem = [
+            "*NOVO PEDIDO - IWG TECHNOLOGICAL SOLUTIONS*",
+            "",
+            f"*Pedido:* #{pedido_id}",
+            f"*Cliente:* {nome}",
+            f"*Telefone:* {telefone}",
+            f"*CPF:* {cpf}",
+            f"*Endereço:* {endereco}",
+            "",
+            "*PRODUTOS:*"
+        ]
+
+        for item in itens:
+            mensagem.append(
+                f"- {item['produto']['nome']} | "
+                f"Qtd: {item['quantidade']} | "
+                f"Unitário: {dinheiro(item['produto']['preco'])} | "
+                f"Subtotal: {dinheiro(item['subtotal'])}"
+            )
+
+        mensagem.extend([
+            "",
+            f"*TOTAL: {dinheiro(total)}*",
+            "",
+            f"*Observações:* {observacoes or 'Nenhuma'}",
+            "",
+            "O frete e eventuais tributos poderão gerar custos adicionais, "
+            "especialmente em envios interestaduais. Os valores serão "
+            "confirmados antes da finalização da compra.",
+            "",
+            "Após a postagem para o endereço informado, a IWG fornecerá "
+            "o código de rastreamento.",
+            "",
+            "Este pedido aguarda confirmação pelo WhatsApp."
+        ])
+
+        session["carrinho"] = {}
+        flash("Pedido registrado. Continue no WhatsApp para enviar sua solicitação.")
+
+        url = (
+            f"https://wa.me/{WHATSAPP}?text="
+            f"{quote(chr(10).join(mensagem), safe='')}"
+        )
+        return redirect(url)
+
+    html = """
+    <h2 class="secao">Finalizar solicitação</h2>
+    <div class="aviso">
+        Preencha seus dados para que possamos confirmar seu pedido pelo WhatsApp.
+        O CPF será enviado na mensagem do WhatsApp e não será armazenado no banco de dados.
+    </div>
+    <form class="formulario" method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+        <label>Nome completo *</label>
+        <input name="nome" required minlength="3">
+
+        <label>Telefone / WhatsApp *</label>
+        <input name="telefone" required placeholder="DDD + número">
+
+        <label>CPF *</label>
+        <input name="cpf" required maxlength="14" placeholder="000.000.000-00">
+
+        <label>CEP *</label>
+        <input name="cep" required maxlength="9" placeholder="00000-000">
+
+        <label>Rua *</label>
+        <input name="rua" required>
+
+        <label>Número *</label>
+        <input name="numero" required>
+
+        <label>Complemento</label>
+        <input name="complemento">
+
+        <label>Bairro *</label>
+        <input name="bairro" required>
+
+        <label>Cidade *</label>
+        <input name="cidade" required>
+
+        <label>Estado (UF) *</label>
+        <input name="estado" required maxlength="2" placeholder="ES">
+
+        <label>Observações</label>
+        <textarea name="observacoes" rows="4"></textarea>
+
+        <h3 class="preco">Total: {{ dinheiro(total) }}</h3>
+        <button class="botao">Registrar pedido e continuar no WhatsApp</button>
+    </form>
+    """
+
+    return render_site(
+        render_template_string(
+            html, total=total, dinheiro=dinheiro
+        ),
+        "Finalizar pedido"
     )
-
-    link = (
-        "https://wa.me/"
-        + WHATSAPP
-        + "?text="
-        + quote(mensagem)
-    )
-
-    session["carrinho"] = {}
-    flash(f"Pedido #{pedido_id} registrado! Continue pelo WhatsApp.")
-
-    return redirect(link)
 
 
 # =========================================================
@@ -1206,7 +1181,11 @@ def finalizar_pedido():
 # =========================================================
 
 @app.route("/admin", methods=["GET", "POST"])
+@app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
+    if session.get("admin"):
+        return redirect(url_for("admin_dashboard"))
+
     if request.method == "POST":
         validar_csrf()
 
@@ -1214,275 +1193,169 @@ def admin_login():
         senha = request.form.get("senha", "")
 
         with conectar() as conn:
-            admin = conn.execute("""
-                SELECT * FROM administradores
-                WHERE usuario = ?
-            """, (usuario,)).fetchone()
+            admin = conn.execute(
+                "SELECT * FROM administradores WHERE usuario=?",
+                (usuario,)
+            ).fetchone()
 
         if admin and check_password_hash(admin["senha"], senha):
             session.clear()
-            session["admin"] = True
-            session["usuario"] = usuario
-            csrf_token()
-            return redirect(url_for("admin_painel"))
+            session["admin"] = admin["id"]
+            session["usuario"] = admin["usuario"]
+            flash("Bem-vindo ao painel administrativo.")
+            return redirect(url_for("admin_dashboard"))
 
         flash("Usuário ou senha incorretos.")
 
     html = """
-    <div class="formulario">
-        <h2 style="color:{{ ouro }}">Acesso administrativo IWG</h2>
-        <form method="post">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-            <label>Usuário</label>
-            <input name="usuario" required>
-            <label>Senha</label>
-            <input name="senha" type="password" required>
-            <button class="botao" type="submit">Entrar</button>
-        </form>
-    </div>
+    <h2 class="secao">Área administrativa IWG</h2>
+    <form class="formulario" method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <label>Usuário</label>
+        <input name="usuario" required>
+        <label>Senha</label>
+        <input type="password" name="senha" required>
+        <button class="botao">Entrar</button>
+    </form>
     """
 
-    return render_site(
-        render_template_string(html, ouro=COR_OURO),
-        "Administração"
-    )
+    return render_site(html, "Login administrativo")
 
 
 # =========================================================
-# DASHBOARD ADMINISTRATIVO
+# PAINEL ADMINISTRATIVO
 # =========================================================
 
 @app.route("/admin/painel")
 @admin_required
-def admin_painel():
+def admin_dashboard():
     with conectar() as conn:
+        total_produtos = conn.execute(
+            "SELECT COUNT(*) AS n FROM produtos"
+        ).fetchone()["n"]
+
+        total_pedidos = conn.execute(
+            "SELECT COUNT(*) AS n FROM pedidos"
+        ).fetchone()["n"]
+
+        total_vendas = conn.execute(
+            "SELECT COALESCE(SUM(total),0) AS n FROM pedidos "
+            "WHERE status NOT IN ('Cancelado')"
+        ).fetchone()["n"]
+
+        pedidos = conn.execute("""
+            SELECT * FROM pedidos ORDER BY id DESC LIMIT 20
+        """).fetchall()
+
         produtos = conn.execute("""
             SELECT * FROM produtos ORDER BY id DESC
         """).fetchall()
 
-        total_produtos = conn.execute(
-            "SELECT COUNT(*) AS total FROM produtos"
-        ).fetchone()["total"]
-
-        ativos = conn.execute(
-            "SELECT COUNT(*) AS total FROM produtos WHERE ativo = 1"
-        ).fetchone()["total"]
-
-        inativos = total_produtos - ativos
-
-        pedidos_total = conn.execute(
-            "SELECT COUNT(*) AS total FROM pedidos"
-        ).fetchone()["total"]
-
-        pedidos_recentes = conn.execute("""
-            SELECT * FROM pedidos
-            ORDER BY id DESC LIMIT 5
-        """).fetchall()
-
     html = """
-    <h2 class="secao">Painel administrativo IWG</h2>
-    <p>Bem-vindo, {{ session.get('usuario') }}!</p>
+    <h2 class="secao">Painel administrativo</h2>
+    <p>Bem-vindo, {{ session.get('usuario') }}.</p>
 
     <div class="grade">
         <div class="cartao-indicador">
-            <span>Total de produtos</span>
+            <span>Produtos cadastrados</span>
             <strong>{{ total_produtos }}</strong>
         </div>
         <div class="cartao-indicador">
-            <span>Produtos ativos</span>
-            <strong>{{ ativos }}</strong>
-        </div>
-        <div class="cartao-indicador">
-            <span>Produtos inativos</span>
-            <strong>{{ inativos }}</strong>
-        </div>
-        <div class="cartao-indicador">
             <span>Pedidos registrados</span>
-            <strong>{{ pedidos_total }}</strong>
+            <strong>{{ total_pedidos }}</strong>
+        </div>
+        <div class="cartao-indicador">
+            <span>Total dos pedidos não cancelados</span>
+            <strong>{{ dinheiro(total_vendas) }}</strong>
         </div>
     </div>
 
-    <br>
-    <a class="botao" href="{{ url_for('admin_novo') }}">+ Novo produto</a>
-    <a class="botao" href="{{ url_for('admin_pedidos') }}">Gerenciar pedidos</a>
+    <h2 class="secao">Gerenciamento</h2>
+    <a class="botao" href="{{ url_for('admin_novo') }}">Cadastrar produto</a>
+    <a class="botao botao-secundario" href="{{ url_for('admin_pedidos') }}">Ver pedidos</a>
     <a class="botao botao-secundario" href="{{ url_for('admin_senha') }}">Alterar senha</a>
+    <a class="botao botao-secundario" href="{{ url_for('admin_logout') }}">Sair</a>
 
-    <form method="post" action="{{ url_for('admin_sair') }}" style="display:inline">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <button class="botao botao-secundario" type="submit">Sair</button>
-    </form>
-
-    <h3 class="secao">Produtos cadastrados</h3>
-
+    <h2 class="secao">Produtos</h2>
     <div class="tabela-responsiva">
     <table>
-        <tr>
-            <th>Produto</th><th>Preço</th><th>Estoque</th>
-            <th>Status</th><th>Ações</th>
-        </tr>
+        <tr><th>Produto</th><th>Preço</th><th>Estoque</th><th>Ativo</th><th>Ações</th></tr>
         {% for p in produtos %}
         <tr>
             <td>{{ p['nome'] }}</td>
             <td>{{ dinheiro(p['preco']) }}</td>
+            <td>{{ p['estoque'] if p['estoque'] is not none else 'Não controlado' }}</td>
+            <td>{{ 'Sim' if p['ativo'] else 'Não' }}</td>
             <td>
-                {% if p['estoque'] is none %}
-                    Sob consulta
-                {% else %}
-                    {{ p['estoque'] }} unidade(s)
-                {% endif %}
-            </td>
-            <td>{{ 'Ativo' if p['ativo'] else 'Inativo' }}</td>
-            <td>
-                <div class="acoes">
-                    <a href="{{ url_for('admin_editar', pid=p['id']) }}">Editar</a>
-
-                    <form method="post"
-                          action="{{ url_for('admin_alternar', pid=p['id']) }}">
-                        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-                        <button type="submit">Ativar/desativar</button>
-                    </form>
-
-                    <form method="post"
-                          action="{{ url_for('admin_excluir', pid=p['id']) }}"
-                          onsubmit="return confirm('Excluir este produto?')">
-                        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-                        <button type="submit">Excluir</button>
-                    </form>
-                </div>
+                <a class="botao" href="{{ url_for('admin_editar', pid=p['id']) }}">Editar</a>
+                <form method="post" action="{{ url_for('admin_excluir', pid=p['id']) }}">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                    <button class="botao botao-secundario"
+                        onclick="return confirm('Excluir este produto?')">
+                        Excluir
+                    </button>
+                </form>
             </td>
         </tr>
         {% endfor %}
     </table>
     </div>
 
-    <h3 class="secao">Pedidos recentes</h3>
-    {% if pedidos_recentes %}
+    <h2 class="secao">Pedidos recentes</h2>
     <div class="tabela-responsiva">
     <table>
-        <tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th></th></tr>
-        {% for pedido in pedidos_recentes %}
+        <tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Detalhes</th></tr>
+        {% for p in pedidos %}
         <tr>
-            <td>#{{ pedido['id'] }}</td>
-            <td>{{ pedido['cliente'] }}</td>
-            <td>{{ dinheiro(pedido['total']) }}</td>
-            <td>{{ pedido['status'] }}</td>
-            <td><a href="{{ url_for('admin_pedido_detalhe', pedido_id=pedido['id']) }}">Ver</a></td>
+            <td>#{{ p['id'] }}</td>
+            <td>{{ p['cliente'] }}</td>
+            <td>{{ dinheiro(p['total']) }}</td>
+            <td>{{ p['status'] }}</td>
+            <td><a class="botao" href="{{ url_for('admin_pedido_detalhe', pid=p['id']) }}">Abrir</a></td>
         </tr>
         {% endfor %}
     </table>
     </div>
-    {% else %}
-        <p>Ainda não existem pedidos registrados.</p>
-    {% endif %}
     """
 
-    conteudo = render_template_string(
-        html,
-        produtos=produtos,
-        total_produtos=total_produtos,
-        ativos=ativos,
-        inativos=inativos,
-        pedidos_total=pedidos_total,
-        pedidos_recentes=pedidos_recentes,
-        dinheiro=dinheiro
-    )
-
-    return render_site(conteudo, "Painel administrativo")
-
-
-# =========================================================
-# CADASTRO E EDIÇÃO DE PRODUTOS
-# =========================================================
-
-def formulario_produto(p=None):
-    html = """
-    <div class="formulario">
-        <h2 style="color:{{ ouro }}">{{ titulo }}</h2>
-
-        <form method="post" enctype="multipart/form-data">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-
-            <label>Nome do produto ou serviço</label>
-            <input name="nome" required value="{{ p['nome'] if p else '' }}">
-
-            <label>Categoria</label>
-            <input name="categoria"
-                   value="{{ p['categoria'] if p else 'Produtos' }}">
-
-            <label>Descrição</label>
-            <textarea name="descricao" rows="4">{{ p['descricao'] if p else '' }}</textarea>
-
-            <label>Preço em reais</label>
-            <input name="preco" type="number" step="0.01"
-                   min="0" required value="{{ p['preco'] if p else '' }}">
-
-            <label>Quantidade em estoque</label>
-            <input name="estoque" type="number" min="0"
-                   value="{{ p['estoque'] if p and p['estoque'] is not none else '' }}"
-                   placeholder="Deixe vazio para estoque sob consulta">
-
-            <p style="color:#AEB6D2;font-size:12px">
-                Deixe o campo vazio para não controlar estoque.
-                Informe zero se o produto estiver sem unidades disponíveis.
-            </p>
-
-            <label>Foto do produto</label>
-            <input name="imagem" type="file" accept=".jpg,.jpeg,.png,.webp">
-
-            {% if p and p['imagem'] %}
-                <p>Imagem atual: {{ p['imagem'] }}</p>
-            {% endif %}
-
-            <button class="botao" type="submit">Salvar produto</button>
-            <a class="botao botao-secundario"
-               href="{{ url_for('admin_painel') }}">Cancelar</a>
-        </form>
-    </div>
-    """
-
-    return render_template_string(
-        html,
-        p=p,
-        titulo="Editar produto" if p else "Novo produto",
-        ouro=COR_OURO
+    return render_site(
+        render_template_string(
+            html,
+            total_produtos=total_produtos,
+            total_pedidos=total_pedidos,
+            total_vendas=total_vendas,
+            pedidos=pedidos,
+            produtos=produtos,
+            dinheiro=dinheiro
+        ),
+        "Painel administrativo"
     )
 
 
-def ler_dados_produto():
-    nome = request.form.get("nome", "").strip()
-    categoria = request.form.get("categoria", "Produtos").strip() or "Produtos"
-    descricao = request.form.get("descricao", "").strip()
+# =========================================================
+# CADASTRAR PRODUTO
+# =========================================================
 
-    try:
-        preco = float(request.form.get("preco", "0").replace(",", "."))
-    except ValueError:
-        preco = -1
-
-    estoque_texto = request.form.get("estoque", "").strip()
-
-    if estoque_texto == "":
-        estoque = None
-    else:
-        try:
-            estoque = int(estoque_texto)
-        except ValueError:
-            estoque = -1
-
-    if not nome or preco < 0 or estoque is not None and estoque < 0:
-        return None
-
-    return nome, categoria, descricao, preco, estoque
-
-
-@app.route("/admin/novo", methods=["GET", "POST"])
+@app.route("/admin/produto/novo", methods=["GET", "POST"])
 @admin_required
 def admin_novo():
     if request.method == "POST":
         validar_csrf()
-        dados = ler_dados_produto()
 
-        if not dados:
-            flash("Confira o nome, preço e estoque.")
+        nome = request.form.get("nome", "").strip()
+        categoria = request.form.get("categoria", "Produtos").strip()
+        descricao = request.form.get("descricao", "").strip()
+
+        try:
+            preco = float(request.form.get("preco", "0").replace(",", "."))
+            estoque_texto = request.form.get("estoque", "").strip()
+            estoque = int(estoque_texto) if estoque_texto else None
+        except ValueError:
+            flash("Preço ou estoque inválido.")
+            return redirect(url_for("admin_novo"))
+
+        if not nome or preco < 0 or (estoque is not None and estoque < 0):
+            flash("Confira os dados do produto.")
             return redirect(url_for("admin_novo"))
 
         imagem = salvar_imagem(request.files.get("imagem"))
@@ -1492,101 +1365,153 @@ def admin_novo():
                 INSERT INTO produtos
                 (nome, categoria, descricao, preco, imagem, estoque)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (*dados, imagem, dados[4]))
+            """, (
+                nome, categoria, descricao, preco, imagem, estoque
+            ))
 
         flash("Produto cadastrado com sucesso!")
-        return redirect(url_for("admin_painel"))
+        return redirect(url_for("admin_dashboard"))
 
     return render_site(formulario_produto(), "Novo produto")
 
 
-@app.route("/admin/editar/<int:pid>", methods=["GET", "POST"])
+def formulario_produto(produto=None):
+    produto = produto or {
+        "nome": "",
+        "categoria": "Produtos",
+        "descricao": "",
+        "preco": 0,
+        "estoque": None
+    }
+
+    html = """
+    <h2 class="secao">{{ titulo_form }}</h2>
+    <form class="formulario" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+        <label>Nome do produto</label>
+        <input name="nome" value="{{ p['nome'] }}" required>
+
+        <label>Categoria</label>
+        <input name="categoria" value="{{ p['categoria'] }}" required>
+
+        <label>Descrição</label>
+        <textarea name="descricao" rows="5">{{ p['descricao'] }}</textarea>
+
+        <label>Preço</label>
+        <input name="preco" type="number" step="0.01" min="0"
+               value="{{ p['preco'] }}" required>
+
+        <label>Estoque (deixe vazio para não controlar)</label>
+        <input name="estoque" type="number" min="0"
+               value="{{ p['estoque'] if p['estoque'] is not none else '' }}">
+
+        <label>Imagem do produto</label>
+        <input name="imagem" type="file" accept=".jpg,.jpeg,.png,.webp">
+
+        <button class="botao">Salvar produto</button>
+        <a class="botao botao-secundario" href="{{ url_for('admin_dashboard') }}">Voltar</a>
+    </form>
+    """
+
+    return render_template_string(
+        html,
+        p=produto,
+        titulo_form="Cadastrar produto" if produto is None else "Editar produto"
+    )
+
+
+# =========================================================
+# EDITAR PRODUTO
+# =========================================================
+
+@app.route("/admin/produto/<int:pid>/editar", methods=["GET", "POST"])
 @admin_required
 def admin_editar(pid):
     with conectar() as conn:
-        p = conn.execute(
-            "SELECT * FROM produtos WHERE id = ?", (pid,)
+        produto = conn.execute(
+            "SELECT * FROM produtos WHERE id=?",
+            (pid,)
         ).fetchone()
 
-    if not p:
-        return redirect(url_for("admin_painel"))
+    if not produto:
+        abort(404)
 
     if request.method == "POST":
         validar_csrf()
-        dados = ler_dados_produto()
 
-        if not dados:
-            flash("Confira o nome, preço e estoque.")
+        nome = request.form.get("nome", "").strip()
+        categoria = request.form.get("categoria", "Produtos").strip()
+        descricao = request.form.get("descricao", "").strip()
+
+        try:
+            preco = float(request.form.get("preco", "0").replace(",", "."))
+            estoque_texto = request.form.get("estoque", "").strip()
+            estoque = int(estoque_texto) if estoque_texto else None
+        except ValueError:
+            flash("Preço ou estoque inválido.")
             return redirect(url_for("admin_editar", pid=pid))
 
-        imagem = p["imagem"]
-        novo_arquivo = request.files.get("imagem")
+        if not nome or preco < 0 or (estoque is not None and estoque < 0):
+            flash("Confira os dados do produto.")
+            return redirect(url_for("admin_editar", pid=pid))
 
-        if novo_arquivo and novo_arquivo.filename:
-            nova_imagem = salvar_imagem(novo_arquivo)
-            if nova_imagem:
-                excluir_imagem(imagem)
-                imagem = nova_imagem
-            else:
-                flash("Formato de imagem inválido.")
-                return redirect(url_for("admin_editar", pid=pid))
+        nova_imagem = salvar_imagem(request.files.get("imagem"))
+        imagem = nova_imagem or produto["imagem"]
 
         with conectar() as conn:
             conn.execute("""
                 UPDATE produtos
-                SET nome=?, categoria=?, descricao=?,
-                    preco=?, imagem=?, estoque=?
+                SET nome=?, categoria=?, descricao=?, preco=?,
+                    imagem=?, estoque=?
                 WHERE id=?
             """, (
-                dados[0], dados[1], dados[2],
-                dados[3], imagem, dados[4], pid
+                nome, categoria, descricao, preco,
+                imagem, estoque, pid
             ))
 
+        if nova_imagem:
+            excluir_imagem(produto["imagem"])
+
         flash("Produto atualizado!")
-        return redirect(url_for("admin_painel"))
+        return redirect(url_for("admin_dashboard"))
 
-    return render_site(formulario_produto(p), "Editar produto")
-
-
-@app.route("/admin/alternar/<int:pid>", methods=["POST"])
-@admin_required
-def admin_alternar(pid):
-    validar_csrf()
-
-    with conectar() as conn:
-        conn.execute("""
-            UPDATE produtos
-            SET ativo = CASE WHEN ativo = 1 THEN 0 ELSE 1 END
-            WHERE id = ?
-        """, (pid,))
-
-    flash("Status do produto atualizado.")
-    return redirect(url_for("admin_painel"))
+    html = formulario_produto(produto)
+    return render_site(html, "Editar produto")
 
 
-@app.route("/admin/excluir/<int:pid>", methods=["POST"])
+# =========================================================
+# EXCLUIR PRODUTO
+# =========================================================
+
+@app.route("/admin/produto/<int:pid>/excluir", methods=["POST"])
 @admin_required
 def admin_excluir(pid):
     validar_csrf()
 
     with conectar() as conn:
-        p = conn.execute(
-            "SELECT imagem FROM produtos WHERE id = ?", (pid,)
+        produto = conn.execute(
+            "SELECT * FROM produtos WHERE id=?",
+            (pid,)
         ).fetchone()
 
-        if p:
-            # Os itens antigos dos pedidos permanecem preservados.
-            excluir_imagem(p["imagem"])
+        if produto:
             conn.execute(
-                "DELETE FROM produtos WHERE id = ?", (pid,)
+                "DELETE FROM produtos WHERE id=?",
+                (pid,)
             )
 
-    flash("Produto excluído.")
-    return redirect(url_for("admin_painel"))
+    if produto:
+        excluir_imagem(produto["imagem"])
+        flash("Produto excluído.")
+    else:
+        flash("Produto não encontrado.")
+
+    return redirect(url_for("admin_dashboard"))
 
 
 # =========================================================
-# GESTÃO DE PEDIDOS
+# PEDIDOS ADMINISTRATIVOS
 # =========================================================
 
 @app.route("/admin/pedidos")
@@ -1599,96 +1524,68 @@ def admin_pedidos():
 
     html = """
     <h2 class="secao">Pedidos recebidos</h2>
-    <a class="botao botao-secundario" href="{{ url_for('admin_painel') }}">
-        Voltar ao painel
-    </a>
-
-    {% if pedidos %}
     <div class="tabela-responsiva">
     <table>
         <tr>
-            <th>Pedido</th><th>Data</th><th>Cliente</th>
+            <th>Pedido</th><th>Cliente</th><th>Telefone</th>
             <th>Total</th><th>Status</th><th>Detalhes</th>
         </tr>
         {% for p in pedidos %}
         <tr>
             <td>#{{ p['id'] }}</td>
-            <td>{{ p['data_criacao'] }}</td>
             <td>{{ p['cliente'] }}</td>
+            <td>{{ p['telefone'] }}</td>
             <td>{{ dinheiro(p['total']) }}</td>
-            <td><span class="badge-status">{{ p['status'] }}</span></td>
-            <td>
-                <a href="{{ url_for('admin_pedido_detalhe', pedido_id=p['id']) }}">
-                    Abrir pedido
-                </a>
-            </td>
+            <td>{{ p['status'] }}</td>
+            <td><a class="botao" href="{{ url_for('admin_pedido_detalhe', pid=p['id']) }}">Abrir</a></td>
         </tr>
         {% endfor %}
     </table>
     </div>
-    {% else %}
-        <p>Nenhum pedido foi registrado ainda.</p>
-    {% endif %}
+    <a class="botao botao-secundario" href="{{ url_for('admin_dashboard') }}">Voltar</a>
     """
 
-    conteudo = render_template_string(
-        html, pedidos=pedidos, dinheiro=dinheiro
+    return render_site(
+        render_template_string(
+            html, pedidos=pedidos, dinheiro=dinheiro
+        ),
+        "Pedidos"
     )
 
-    return render_site(conteudo, "Pedidos")
 
-
-@app.route("/admin/pedido/<int:pedido_id>")
+@app.route("/admin/pedido/<int:pid>")
 @admin_required
-def admin_pedido_detalhe(pedido_id):
+def admin_pedido_detalhe(pid):
     with conectar() as conn:
         pedido = conn.execute(
-            "SELECT * FROM pedidos WHERE id = ?", (pedido_id,)
+            "SELECT * FROM pedidos WHERE id=?",
+            (pid,)
         ).fetchone()
+
+        if not pedido:
+            abort(404)
 
         itens = conn.execute("""
             SELECT * FROM pedido_itens
-            WHERE pedido_id = ? ORDER BY id
-        """, (pedido_id,)).fetchall()
-
-    if not pedido:
-        return redirect(url_for("admin_pedidos"))
+            WHERE pedido_id=? ORDER BY id
+        """, (pid,)).fetchall()
 
     html = """
     <h2 class="secao">Pedido #{{ pedido['id'] }}</h2>
 
-    <div class="formulario">
-        <p><strong>Cliente:</strong> {{ pedido['cliente'] }}</p>
-        <p><strong>Data:</strong> {{ pedido['data_criacao'] }}</p>
-        <p><strong>Observações:</strong> {{ pedido['observacoes'] or 'Nenhuma' }}</p>
-        <p><strong>Total:</strong> {{ dinheiro(pedido['total']) }}</p>
-        <p><strong>Status atual:</strong>
-            <span class="badge-status">{{ pedido['status'] }}</span>
-        </p>
-
-        <h3 style="color:{{ ouro }}">Atualizar status</h3>
-        <form method="post"
-              action="{{ url_for('admin_pedido_status', pedido_id=pedido['id']) }}">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-            <select name="status" required>
-                {% for status in status_opcoes %}
-                    <option value="{{ status }}"
-                        {% if pedido['status'] == status %}selected{% endif %}>
-                        {{ status }}
-                    </option>
-                {% endfor %}
-            </select>
-            <button class="botao" type="submit">Salvar status</button>
-        </form>
+    <div class="aviso">
+        <strong>Cliente:</strong> {{ pedido['cliente'] }}<br>
+        <strong>Telefone:</strong> {{ pedido['telefone'] }}<br>
+        <strong>Endereço:</strong> {{ endereco_pedido(pedido) }}<br>
+        <strong>Data:</strong> {{ pedido['data_criacao'] }}<br>
+        <strong>Status:</strong> {{ pedido['status'] }}<br>
+        <strong>Observações:</strong> {{ pedido['observacoes'] or 'Nenhuma' }}
     </div>
 
-    <h3 class="secao">Itens do pedido</h3>
+    <h3 class="secao">Produtos do pedido</h3>
     <div class="tabela-responsiva">
     <table>
-        <tr>
-            <th>Produto</th><th>Quantidade</th>
-            <th>Preço unitário</th><th>Subtotal</th>
-        </tr>
+        <tr><th>Produto</th><th>Quantidade</th><th>Unitário</th><th>Subtotal</th></tr>
         {% for item in itens %}
         <tr>
             <td>{{ item['nome_produto'] }}</td>
@@ -1700,63 +1597,152 @@ def admin_pedido_detalhe(pedido_id):
     </table>
     </div>
 
-    <a class="botao botao-secundario"
-       href="{{ url_for('admin_pedidos') }}">Voltar aos pedidos</a>
+    <h2 class="preco">Total: {{ dinheiro(pedido['total']) }}</h2>
+
+    <form class="formulario" method="post"
+          action="{{ url_for('admin_atualizar_status', pid=pedido['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <label>Atualizar status</label>
+        <select name="status">
+            {% for s in status_opcoes %}
+            <option value="{{ s }}" {{ 'selected' if pedido['status'] == s else '' }}>
+                {{ s }}
+            </option>
+            {% endfor %}
+        </select>
+        <button class="botao">Salvar status</button>
+    </form>
+
+    <form class="formulario" method="post"
+          action="{{ url_for('admin_rastreamento', pid=pedido['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <h3 class="secao">Código de rastreamento</h3>
+        <label>Informe o código de rastreio</label>
+        <input name="codigo_rastreamento"
+               value="{{ pedido['codigo_rastreamento'] or '' }}"
+               placeholder="Código de rastreamento">
+        <button class="botao">Salvar e preparar WhatsApp do cliente</button>
+    </form>
+
+    {% if pedido['codigo_rastreamento'] %}
+    <div class="aviso">
+        Código registrado: <strong>{{ pedido['codigo_rastreamento'] }}</strong>
+    </div>
+    {% endif %}
+
+    <a class="botao botao-secundario" href="{{ url_for('admin_pedidos') }}">Voltar aos pedidos</a>
     """
 
-    conteudo = render_template_string(
-        html,
-        pedido=pedido,
-        itens=itens,
-        dinheiro=dinheiro,
-        ouro=COR_OURO,
-        status_opcoes=[
-            "Recebido",
-            "Em atendimento",
-            "Aguardando pagamento",
-            "Pago",
-            "Concluído",
-            "Cancelado"
-        ]
-    )
-
-    return render_site(conteudo, f"Pedido {pedido_id}")
-
-
-@app.route("/admin/pedido/<int:pedido_id>/status", methods=["POST"])
-@admin_required
-def admin_pedido_status(pedido_id):
-    validar_csrf()
-
-    status = request.form.get("status", "")
-    permitidos = {
-        "Recebido",
+    status_opcoes = [
+        "Aguardando confirmação no WhatsApp",
         "Em atendimento",
         "Aguardando pagamento",
         "Pago",
+        "Enviado",
         "Concluído",
         "Cancelado"
-    }
+    ]
 
-    if status not in permitidos:
-        flash("Status inválido.")
-        return redirect(
-            url_for("admin_pedido_detalhe", pedido_id=pedido_id)
-        )
-
-    with conectar() as conn:
-        conn.execute("""
-            UPDATE pedidos SET status = ? WHERE id = ?
-        """, (status, pedido_id))
-
-    flash("Status do pedido atualizado.")
-    return redirect(
-        url_for("admin_pedido_detalhe", pedido_id=pedido_id)
+    return render_site(
+        render_template_string(
+            html,
+            pedido=pedido,
+            itens=itens,
+            dinheiro=dinheiro,
+            endereco_pedido=endereco_pedido,
+            status_opcoes=status_opcoes
+        ),
+        f"Pedido {pid}"
     )
 
 
 # =========================================================
-# ALTERAÇÃO DE SENHA
+# ATUALIZAR STATUS
+# =========================================================
+
+@app.route("/admin/pedido/<int:pid>/status", methods=["POST"])
+@admin_required
+def admin_atualizar_status(pid):
+    validar_csrf()
+
+    status = request.form.get("status", "")
+
+    permitidos = [
+        "Aguardando confirmação no WhatsApp",
+        "Em atendimento",
+        "Aguardando pagamento",
+        "Pago",
+        "Enviado",
+        "Concluído",
+        "Cancelado"
+    ]
+
+    if status not in permitidos:
+        abort(400)
+
+    with conectar() as conn:
+        conn.execute(
+            "UPDATE pedidos SET status=? WHERE id=?",
+            (status, pid)
+        )
+
+    flash("Status do pedido atualizado.")
+    return redirect(url_for("admin_pedido_detalhe", pid=pid))
+
+
+# =========================================================
+# RASTREAMENTO E WHATSAPP DO CLIENTE
+# =========================================================
+
+@app.route("/admin/pedido/<int:pid>/rastreamento", methods=["POST"])
+@admin_required
+def admin_rastreamento(pid):
+    validar_csrf()
+
+    codigo = request.form.get("codigo_rastreamento", "").strip()
+
+    if not codigo:
+        flash("Informe o código de rastreamento.")
+        return redirect(url_for("admin_pedido_detalhe", pid=pid))
+
+    with conectar() as conn:
+        pedido = conn.execute(
+            "SELECT * FROM pedidos WHERE id=?",
+            (pid,)
+        ).fetchone()
+
+        if not pedido:
+            abort(404)
+
+        conn.execute("""
+            UPDATE pedidos
+            SET codigo_rastreamento=?, status='Enviado'
+            WHERE id=?
+        """, (codigo, pid))
+
+    telefone = re.sub(r"\D", "", pedido["telefone"] or "")
+
+    if not 10 <= len(telefone) <= 13:
+        flash("Código salvo, mas o telefone do cliente não é válido para WhatsApp.")
+        return redirect(url_for("admin_pedido_detalhe", pid=pid))
+
+    mensagem = (
+        f"Olá, {pedido['cliente']}! Tudo bem?\n\n"
+        f"Seu pedido #{pedido['id']} da IWG Technological Solutions "
+        f"foi postado para o endereço informado.\n\n"
+        f"*Código de rastreamento:* {codigo}\n\n"
+        f"*Destino:* {endereco_pedido(pedido)}\n\n"
+        "Guarde este código para acompanhar a entrega junto à transportadora.\n\n"
+        "Agradecemos pela sua compra!\n"
+        "IWG Technological Solutions"
+    )
+
+    url = f"https://wa.me/{telefone}?text={quote(mensagem, safe='')}"
+    return redirect(url)
+
+
+# =========================================================
+# ALTERAR SENHA ADMINISTRATIVA
 # =========================================================
 
 @app.route("/admin/senha", methods=["GET", "POST"])
@@ -1765,99 +1751,104 @@ def admin_senha():
     if request.method == "POST":
         validar_csrf()
 
-        atual = request.form.get("atual", "")
-        nova = request.form.get("nova", "")
-        confirmar = request.form.get("confirmar", "")
+        atual = request.form.get("senha_atual", "")
+        nova = request.form.get("nova_senha", "")
+        confirmar = request.form.get("confirmar_senha", "")
 
         with conectar() as conn:
-            admin = conn.execute("""
-                SELECT * FROM administradores
-                WHERE usuario = ?
-            """, (session.get("usuario"),)).fetchone()
+            admin = conn.execute(
+                "SELECT * FROM administradores WHERE id=?",
+                (session["admin"],)
+            ).fetchone()
 
             if not admin or not check_password_hash(admin["senha"], atual):
                 flash("Senha atual incorreta.")
-            elif len(nova) < 8:
-                flash("A nova senha deve ter pelo menos 8 caracteres.")
-            elif nova != confirmar:
-                flash("As senhas não conferem.")
-            else:
-                conn.execute("""
-                    UPDATE administradores SET senha = ?
-                    WHERE id = ?
-                """, (
-                    generate_password_hash(nova),
-                    admin["id"]
-                ))
+                return redirect(url_for("admin_senha"))
 
-                flash("Senha alterada com sucesso!")
-                return redirect(url_for("admin_painel"))
+            if len(nova) < 4:
+                flash("A nova senha precisa ter pelo menos 4 caracteres.")
+                return redirect(url_for("admin_senha"))
+
+            if nova != confirmar:
+                flash("A confirmação da senha não corresponde.")
+                return redirect(url_for("admin_senha"))
+
+            conn.execute("""
+                UPDATE administradores SET senha=? WHERE id=?
+            """, (generate_password_hash(nova), session["admin"]))
+
+        flash("Senha alterada com sucesso!")
+        return redirect(url_for("admin_dashboard"))
 
     html = """
-    <div class="formulario">
-        <h2 style="color:{{ ouro }}">Alterar senha</h2>
-        <form method="post">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-            <label>Senha atual</label>
-            <input type="password" name="atual" required>
-            <label>Nova senha</label>
-            <input type="password" name="nova" required>
-            <label>Confirmar nova senha</label>
-            <input type="password" name="confirmar" required>
-            <button class="botao">Alterar senha</button>
-        </form>
-    </div>
+    <h2 class="secao">Alterar senha</h2>
+    <form class="formulario" method="post">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <label>Senha atual</label>
+        <input type="password" name="senha_atual" required>
+        <label>Nova senha</label>
+        <input type="password" name="nova_senha" required>
+        <label>Confirmar nova senha</label>
+        <input type="password" name="confirmar_senha" required>
+        <button class="botao">Alterar senha</button>
+    </form>
     """
 
-    return render_site(
-        render_template_string(html, ouro=COR_OURO),
-        "Alterar senha"
-    )
+    return render_site(html, "Alterar senha")
 
 
-@app.route("/admin/sair", methods=["POST"])
-@admin_required
-def admin_sair():
-    validar_csrf()
+# =========================================================
+# SAIR DO PAINEL
+# =========================================================
+
+@app.route("/admin/sair")
+def admin_logout():
     session.clear()
+    flash("Você saiu do painel administrativo.")
     return redirect(url_for("inicio"))
 
 
 # =========================================================
-# TRATAMENTO DE ERROS
+# PAGINAS DE ERRO
 # =========================================================
 
+@app.errorhandler(404)
+def pagina_nao_encontrada(error):
+    html = """
+    <h2 class="secao">Página não encontrada</h2>
+    <p>O conteúdo solicitado não foi encontrado.</p>
+    <a class="botao" href="{{ url_for('inicio') }}">Voltar ao início</a>
+    """
+    return render_site(html, "Página não encontrada"), 404
+
+
 @app.errorhandler(400)
-def requisicao_invalida(e):
-    return render_site("""
-        <h2 class="secao">Requisição inválida.</h2>
-        <p>Atualize a página e tente novamente.</p>
-        <a class="botao" href="/">Voltar ao início</a>
-    """, "Requisição inválida"), 400
+def requisicao_invalida(error):
+    html = """
+    <h2 class="secao">Requisição inválida</h2>
+    <p>Não foi possível processar esta solicitação.</p>
+    <a class="botao" href="{{ url_for('inicio') }}">Voltar ao início</a>
+    """
+    return render_site(html, "Requisição inválida"), 400
 
 
 @app.errorhandler(413)
-def arquivo_grande(e):
-    flash("A imagem ultrapassa o limite de 5 MB.")
-    return redirect(request.referrer or url_for("inicio"))
-
-
-@app.errorhandler(404)
-def pagina_nao_encontrada(e):
-    return render_site("""
-        <h2 class="secao">Página não encontrada.</h2>
-        <a class="botao" href="/">Voltar ao início</a>
-    """, "Página não encontrada"), 404
+def arquivo_grande(error):
+    html = """
+    <h2 class="secao">Arquivo muito grande</h2>
+    <p>O limite para envio de arquivos é de 5 MB.</p>
+    <a class="botao" href="{{ url_for('admin_dashboard') }}">Voltar</a>
+    """
+    return render_site(html, "Arquivo muito grande"), 413
 
 
 # =========================================================
-# EXECUÇÃO
+# EXECUCAO LOCAL
 # =========================================================
 
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8550)),
+        port=int(os.environ.get("PORT", 5000)),
         debug=False
     )
-
