@@ -1,42 +1,31 @@
+
 import os
-import re
-import uuid
 import sqlite3
-import secrets
-from pathlib import Path
+import uuid
 from functools import wraps
 from urllib.parse import quote
 
 from flask import (
     Flask, render_template_string, request, redirect,
-    url_for, session, flash, abort
+    url_for, session, send_from_directory, flash,
+    get_flashed_messages, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from markupsafe import escape
 
 
 # =========================================================
-# CONFIGURACOES IWG
+# CONFIGURACOES
 # =========================================================
 
-BASE_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = BASE_DIR / "assets"
-UPLOAD_DIR = ASSETS_DIR / "produtos"
-BANCO = BASE_DIR / "iwg_catalogo.db"
-
-ASSETS_DIR.mkdir(exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-app = Flask(
-    __name__,
-    static_folder=str(ASSETS_DIR),
-    static_url_path="/arquivos"
-)
+app = Flask(__name__)
 
 app.secret_key = os.environ.get(
     "IWG_SECRET_KEY",
-    "iwg-chave-temporaria-trocar-antes-de-publicar"
+    "iwg_app_ios_chave_secreta_troque_antes_de_publicar"
 )
+
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 AZUL_FUNDO = "#020526"
@@ -45,156 +34,277 @@ COR_CARD = "#0A0E45"
 COR_BORDA = "#3A4F7C"
 
 WHATSAPP = "5527999243025"
-INSTAGRAM = "https://instagram.com/iulumozart"
-LINKEDIN = "https://linkedin.com/in/iuluwayner"
-YOUTUBE = "https://www.youtube.com/channel/UC8Z1DSRn3j5Rj4zMuy5sXIQ"
 
-EXTENSOES = {"jpg", "jpeg", "png", "webp"}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BANCO = os.path.join(BASE_DIR, "iwg_catalogo.db")
 
-IMAGENS_PRODUTOS = {
-    1: "https://images.unsplash.com/photo-1515879218367-8466d910aaa4?w=900",
-    2: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=900",
-    3: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=900",
-    4: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=900",
-    5: "https://images.unsplash.com/photo-1550009158-9ebf69173e03?w=900",
-    6: "https://images.unsplash.com/photo-1606220945770-b5b6c2c55bf1?w=900"
-}
+PASTA_ASSETS = os.path.join(BASE_DIR, "assets")
+PASTA_PRODUTOS = os.path.join(PASTA_ASSETS, "produtos")
 
-IMAGEM_BANNER = (
-    "https://images.unsplash.com/photo-1518770660439-4636190af475"
-    "?auto=format&fit=crop&w=2000&q=85"
-)
+EXTENSOES_PERMITIDAS = {"jpg", "jpeg", "png", "webp"}
+
+USUARIO_ADMIN_INICIAL = "iulu"
+SENHA_ADMIN_INICIAL = "iulu"
+
+STATUS_PEDIDOS = [
+    "Aguardando confirmação no WhatsApp",
+    "Em atendimento",
+    "Aguardando pagamento",
+    "Pago",
+    "Enviado",
+    "Concluído",
+    "Cancelado"
+]
+
+os.makedirs(PASTA_PRODUTOS, exist_ok=True)
+os.makedirs(PASTA_ASSETS, exist_ok=True)
 
 
 # =========================================================
-# BANCO DE DADOS
+# IMAGENS PROVISORIAS
+# =========================================================
+
+IMAGENS_PROVISORIAS = {
+    "audio": (
+        "https://images.unsplash.com/"
+        "photo-1505740420928-5e560c06d30e"
+        "?auto=format&fit=crop&w=900&q=85"
+    ),
+    "acessorios": (
+        "https://images.unsplash.com/"
+        "photo-1583394838336-acd977736f90"
+        "?auto=format&fit=crop&w=900&q=85"
+    ),
+    "eletronicos": (
+        "https://images.unsplash.com/"
+        "photo-1511707171634-5f897ff02aa9"
+        "?auto=format&fit=crop&w=900&q=85"
+    ),
+    "software": (
+        "https://images.unsplash.com/"
+        "photo-1498050108023-c5249f4df085"
+        "?auto=format&fit=crop&w=900&q=85"
+    ),
+    "consultoria": (
+        "https://images.unsplash.com/"
+        "photo-1521737711867-e3b97375f902"
+        "?auto=format&fit=crop&w=900&q=85"
+    ),
+    "educacao": (
+        "https://images.unsplash.com/"
+        "photo-1517842645767-c639042777db"
+        "?auto=format&fit=crop&w=900&q=85"
+    ),
+    "geral": (
+        "https://images.unsplash.com/"
+        "photo-1519389950473-47ba0277781c"
+        "?auto=format&fit=crop&w=900&q=85"
+    )
+}
+
+
+def imagem_provisoria(categoria, nome=""):
+    texto = f"{categoria or ''} {nome or ''}".lower()
+
+    if any(p in texto for p in ["airpod", "fone", "audio", "áudio"]):
+        return IMAGENS_PROVISORIAS["audio"]
+
+    if any(p in texto for p in [
+        "adaptador", "cabo", "acessorio", "acessório", "carregador"
+    ]):
+        return IMAGENS_PROVISORIAS["acessorios"]
+
+    if any(p in texto for p in ["smartphone", "celular", "tablet"]):
+        return IMAGENS_PROVISORIAS["eletronicos"]
+
+    if any(p in texto for p in [
+        "software", "licenca", "licença", "python",
+        "automacao", "automação"
+    ]):
+        return IMAGENS_PROVISORIAS["software"]
+
+    if any(p in texto for p in ["consultoria", "servico", "serviço"]):
+        return IMAGENS_PROVISORIAS["consultoria"]
+
+    if any(p in texto for p in ["ebook", "educacao", "educação", "livro"]):
+        return IMAGENS_PROVISORIAS["educacao"]
+
+    if any(p in texto for p in [
+        "eletronico", "eletrônico", "importacao", "importação"
+    ]):
+        return IMAGENS_PROVISORIAS["eletronicos"]
+
+    return IMAGENS_PROVISORIAS["geral"]
+
+
+# =========================================================
+# BANCO DE DADOS E MIGRACOES
 # =========================================================
 
 def conectar():
-    conn = sqlite3.connect(BANCO)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    conexao = sqlite3.connect(BANCO)
+    conexao.row_factory = sqlite3.Row
+    return conexao
 
 
-def migrar_colunas(conn, tabela, colunas):
-    existentes = {
-        row["name"]
-        for row in conn.execute(
+def adicionar_coluna_se_nao_existir(db, tabela, coluna, definicao):
+    colunas = [
+        item["name"]
+        for item in db.execute(
             f"PRAGMA table_info({tabela})"
         ).fetchall()
-    }
+    ]
 
-    for nome, tipo in colunas.items():
-        if nome not in existentes:
-            conn.execute(
-                f"ALTER TABLE {tabela} ADD COLUMN {nome} {tipo}"
-            )
+    if coluna not in colunas:
+        db.execute(
+            f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}"
+        )
 
 
 def iniciar_banco():
-    with conectar() as conn:
-        conn.execute("""
+    with conectar() as db:
+
+        db.execute("""
             CREATE TABLE IF NOT EXISTS produtos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nome TEXT NOT NULL,
-                categoria TEXT DEFAULT 'Produtos',
-                descricao TEXT DEFAULT '',
-                preco REAL DEFAULT 0,
-                imagem TEXT DEFAULT '',
-                ativo INTEGER DEFAULT 1,
-                estoque INTEGER DEFAULT NULL
+                preco REAL NOT NULL,
+                descricao TEXT,
+                categoria TEXT,
+                ativo INTEGER DEFAULT 1
             )
         """)
 
-        migrar_colunas(conn, "produtos", {
-            "estoque": "INTEGER DEFAULT NULL",
-            "ativo": "INTEGER DEFAULT 1",
-            "imagem": "TEXT DEFAULT ''"
-        })
-
-        conn.execute("""
+        db.execute("""
             CREATE TABLE IF NOT EXISTS administradores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 usuario TEXT UNIQUE NOT NULL,
-                senha TEXT NOT NULL
+                senha_hash TEXT NOT NULL
             )
         """)
 
-        conn.execute("""
+        adicionar_coluna_se_nao_existir(
+            db, "produtos", "imagem", "TEXT"
+        )
+
+        db.execute("""
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cliente TEXT NOT NULL,
-                observacoes TEXT DEFAULT '',
-                total REAL NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'Recebido',
-                data_criacao TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                nome TEXT NOT NULL,
+                telefone TEXT NOT NULL,
+                cep TEXT NOT NULL,
+                rua TEXT NOT NULL,
+                numero TEXT NOT NULL,
+                complemento TEXT,
+                bairro TEXT NOT NULL,
+                cidade TEXT NOT NULL,
+                estado TEXT NOT NULL,
+                observacoes TEXT,
+                itens TEXT NOT NULL,
+                total REAL NOT NULL,
+                status TEXT NOT NULL,
+                codigo_rastreio TEXT,
+                data_criacao TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        migrar_colunas(conn, "pedidos", {
-            "telefone": "TEXT DEFAULT ''",
-            "cep": "TEXT DEFAULT ''",
-            "rua": "TEXT DEFAULT ''",
-            "numero": "TEXT DEFAULT ''",
-            "complemento": "TEXT DEFAULT ''",
-            "bairro": "TEXT DEFAULT ''",
-            "cidade": "TEXT DEFAULT ''",
-            "estado": "TEXT DEFAULT ''",
-            "codigo_rastreamento": "TEXT DEFAULT ''"
-        })
+        # Migracoes seguras para bancos ja existentes.
+        adicionar_coluna_se_nao_existir(
+            db, "pedidos", "complemento", "TEXT"
+        )
+        adicionar_coluna_se_nao_existir(
+            db, "pedidos", "observacoes", "TEXT"
+        )
+        adicionar_coluna_se_nao_existir(
+            db, "pedidos", "codigo_rastreio", "TEXT"
+        )
+        adicionar_coluna_se_nao_existir(
+            db, "pedidos", "data_criacao",
+            "TEXT DEFAULT CURRENT_TIMESTAMP"
+        )
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pedido_itens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                pedido_id INTEGER NOT NULL,
-                produto_id INTEGER,
-                nome_produto TEXT NOT NULL,
-                quantidade INTEGER NOT NULL,
-                preco_unitario REAL NOT NULL,
-                subtotal REAL NOT NULL,
-                FOREIGN KEY (pedido_id)
-                    REFERENCES pedidos(id) ON DELETE CASCADE
+        quantidade = db.execute(
+            "SELECT COUNT(*) FROM administradores"
+        ).fetchone()[0]
+
+        if quantidade == 0:
+            senha_hash = generate_password_hash(
+                SENHA_ADMIN_INICIAL,
+                method="pbkdf2:sha256"
             )
-        """)
 
-        admin = conn.execute(
-            "SELECT id FROM administradores WHERE usuario = ?",
-            ("iulu",)
-        ).fetchone()
-
-        if not admin:
-            conn.execute("""
-                INSERT INTO administradores (usuario, senha)
+            db.execute("""
+                INSERT INTO administradores (usuario, senha_hash)
                 VALUES (?, ?)
-            """, ("iulu", generate_password_hash("iulu")))
+            """, (USUARIO_ADMIN_INICIAL, senha_hash))
 
-        total = conn.execute(
-            "SELECT COUNT(*) AS total FROM produtos"
-        ).fetchone()["total"]
+        quantidade_produtos = db.execute(
+            "SELECT COUNT(*) FROM produtos"
+        ).fetchone()[0]
 
-        if total == 0:
-            iniciais = [
-                ("Automação Python sob Medida", "Softwares",
-                 "Automação de tarefas e processos sob medida.", 1500),
-                ("Licença Acesso IWG Core", "Softwares",
-                 "Soluções digitais e acesso a ferramentas IWG.", 850),
-                ("Consultoria em Arquitetura", "Serviços",
-                 "Consultoria em arquitetura de sistemas e software.", 2500),
-                ("Kit E-books Técnicos", "Produtos",
-                 "Materiais digitais para aprendizado e tecnologia.", 120),
-                ("Adaptador Lightning OTG", "Eletrônicos",
-                 "Acessório eletrônico. Consulte disponibilidade.", 45),
-                ("Fones Apple AirPods", "Eletrônicos",
-                 "Produto ilustrativo. Consulte disponibilidade.", 199)
+        if quantidade_produtos == 0:
+            produtos_iniciais = [
+                (
+                    "Automação Python sob Medida",
+                    1500.00,
+                    "Desenvolvimento de scripts personalizados para automação.",
+                    "Softwares", 1, IMAGENS_PROVISORIAS["software"]
+                ),
+                (
+                    "Licença Acesso IWG Core",
+                    850.00,
+                    "Soluções digitais e acesso a ferramentas de software.",
+                    "Licenças", 1, IMAGENS_PROVISORIAS["software"]
+                ),
+                (
+                    "Consultoria em Arquitetura",
+                    2500.00,
+                    "Consultoria técnica em sistemas e arquitetura de software.",
+                    "Consultoria", 1, IMAGENS_PROVISORIAS["consultoria"]
+                ),
+                (
+                    "Kit E-books Técnicos",
+                    120.00,
+                    "Materiais digitais e conteúdos técnicos.",
+                    "Educação", 1, IMAGENS_PROVISORIAS["educacao"]
+                ),
+                (
+                    "Adaptador Lightning OTG",
+                    45.00,
+                    "Acessório eletrônico para dispositivos compatíveis.",
+                    "Acessórios", 1, IMAGENS_PROVISORIAS["acessorios"]
+                ),
+                (
+                    "Fones Apple AirPods",
+                    199.00,
+                    "Imagem ilustrativa de fones sem fio. Produto sujeito à confirmação de estoque.",
+                    "Áudio", 1, IMAGENS_PROVISORIAS["audio"]
+                )
             ]
 
-            for produto in iniciais:
-                conn.execute("""
-                    INSERT INTO produtos
-                    (nome, categoria, descricao, preco)
-                    VALUES (?, ?, ?, ?)
-                """, produto)
+            db.executemany("""
+                INSERT INTO produtos
+                (nome, preco, descricao, categoria, ativo, imagem)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, produtos_iniciais)
+
+        else:
+            produtos = db.execute("""
+                SELECT id, nome, categoria
+                FROM produtos
+                WHERE imagem IS NULL OR imagem = ''
+            """).fetchall()
+
+            for produto in produtos:
+                db.execute("""
+                    UPDATE produtos SET imagem = ?
+                    WHERE id = ?
+                """, (
+                    imagem_provisoria(
+                        produto["categoria"], produto["nome"]
+                    ),
+                    produto["id"]
+                ))
 
 
 iniciar_banco()
@@ -204,384 +314,532 @@ iniciar_banco()
 # FUNCOES AUXILIARES
 # =========================================================
 
-def dinheiro(valor):
+def formatar_preco(valor):
     return (
-        f"R$ {float(valor):,.2f}"
+        f"{valor:,.2f}"
         .replace(",", "X")
         .replace(".", ",")
         .replace("X", ".")
     )
 
 
-def imagem_produto(produto):
-    if produto["imagem"]:
-        return url_for(
-            "static",
-            filename="produtos/" + produto["imagem"]
-        )
-    return IMAGENS_PRODUTOS.get(
-        produto["id"], IMAGEM_BANNER
-    )
+def converter_preco(valor):
+    valor = str(valor or "").strip()
+    valor = valor.replace("R$", "").replace(" ", "")
+
+    if "," in valor:
+        valor = valor.replace(".", "").replace(",", ".")
+
+    return float(valor)
+
+
+def buscar_produtos(apenas_ativos=False):
+    with conectar() as db:
+        if apenas_ativos:
+            return db.execute("""
+                SELECT * FROM produtos
+                WHERE ativo = 1
+                ORDER BY id DESC
+            """).fetchall()
+
+        return db.execute("""
+            SELECT * FROM produtos
+            ORDER BY id DESC
+        """).fetchall()
+
+
+def buscar_produto(pid):
+    with conectar() as db:
+        return db.execute("""
+            SELECT * FROM produtos WHERE id = ?
+        """, (pid,)).fetchone()
+
+
+def buscar_categorias():
+    with conectar() as db:
+        return db.execute("""
+            SELECT DISTINCT categoria
+            FROM produtos
+            WHERE ativo = 1
+              AND categoria IS NOT NULL
+              AND TRIM(categoria) != ''
+            ORDER BY categoria
+        """).fetchall()
+
+
+def buscar_pedido(pid):
+    with conectar() as db:
+        return db.execute("""
+            SELECT * FROM pedidos WHERE id = ?
+        """, (pid,)).fetchone()
+
+
+def administrador_obrigatorio(funcao):
+    @wraps(funcao)
+    def verificar(*args, **kwargs):
+        if not session.get("admin_logado"):
+            return redirect(url_for("admin_login"))
+        return funcao(*args, **kwargs)
+    return verificar
 
 
 def salvar_imagem(arquivo):
     if not arquivo or not arquivo.filename:
-        return ""
+        return None
 
     nome_original = secure_filename(arquivo.filename)
 
     if "." not in nome_original:
-        return ""
+        raise ValueError("Arquivo sem extensão válida.")
 
     extensao = nome_original.rsplit(".", 1)[1].lower()
 
-    if extensao not in EXTENSOES:
-        return ""
+    if extensao not in EXTENSOES_PERMITIDAS:
+        raise ValueError(
+            "Formato não permitido. Use JPG, JPEG, PNG ou WEBP."
+        )
 
-    nome = f"{uuid.uuid4().hex}.{extensao}"
-    arquivo.save(UPLOAD_DIR / nome)
-    return nome
+    nome_final = f"{uuid.uuid4().hex}.{extensao}"
+    caminho = os.path.join(PASTA_PRODUTOS, nome_final)
+    arquivo.save(caminho)
+
+    return f"produtos/{nome_final}"
 
 
-def excluir_imagem(nome):
-    if not nome:
+def excluir_imagem_local(caminho):
+    if not caminho:
         return
 
-    caminho = UPLOAD_DIR / nome
+    caminho = str(caminho).replace("\\", "/")
 
-    if caminho.is_file() and caminho.parent == UPLOAD_DIR:
-        caminho.unlink()
+    if not caminho.startswith("produtos/"):
+        return
 
+    nome = os.path.basename(caminho)
+    arquivo = os.path.join(PASTA_PRODUTOS, nome)
 
-def csrf_token():
-    if "_csrf" not in session:
-        session["_csrf"] = secrets.token_hex(32)
-    return session["_csrf"]
-
-
-@app.context_processor
-def disponibilizar_csrf():
-    return {"csrf_token": csrf_token}
+    if os.path.isfile(arquivo):
+        try:
+            os.remove(arquivo)
+        except OSError:
+            pass
 
 
-def validar_csrf():
-    enviado = request.form.get("_csrf", "")
-    salvo = session.get("_csrf", "")
-
-    if not enviado or not salvo or not secrets.compare_digest(
-        enviado, salvo
-    ):
-        abort(400, description="Token de segurança inválido.")
-
-
-def admin_required(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if not session.get("admin"):
-            return redirect(url_for("admin_login"))
-        return func(*args, **kwargs)
-    return wrapper
-
-
-def quantidade_carrinho():
-    return sum(
-        int(q)
-        for q in session.get("carrinho", {}).values()
+def obter_url_imagem(produto):
+    imagem = produto["imagem"] or imagem_provisoria(
+        produto["categoria"], produto["nome"]
     )
 
+    if imagem.startswith("http://") or imagem.startswith("https://"):
+        return imagem
 
-def endereco_pedido(pedido):
-    return (
-        f"{pedido['rua']}, {pedido['numero']} "
-        f"{pedido['complemento']} - {pedido['bairro']}, "
-        f"{pedido['cidade']}/{pedido['estado']} - CEP {pedido['cep']}"
+    return url_for("servir_arquivos", filename=imagem)
+
+
+def gerar_rodape():
+    return f"""
+    <div style="
+        margin-top:40px;
+        background:linear-gradient(135deg,{COR_CARD},#121858);
+        border:1px solid {COR_OURO};
+        border-radius:12px;
+        padding:25px 20px;
+        text-align:center;
+        box-shadow:0 4px 15px rgba(247,192,74,.15);
+    ">
+        <h4 style="color:{COR_OURO};font-size:16px;margin-bottom:8px;">
+            IWG Technological Solutions
+        </h4>
+        <p style="color:#D1D5DB;font-size:12px;line-height:1.7;">
+            Tecnologia, inovação e soluções inteligentes.
+            Produtos eletrônicos, importações e desenvolvimento de softwares.
+        </p>
+        <div style="
+            font-size:11px;color:#9CA3AF;
+            border-top:1px solid {COR_BORDA};
+            padding-top:12px;margin-top:12px;
+        ">
+            © 2026 IWG — Todos os direitos reservados.
+        </div>
+    </div>
+    """
+
+
+def layout_admin(conteudo, titulo="Painel Administrativo"):
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{ titulo }} - IWG</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                font-family: -apple-system, BlinkMacSystemFont,
+                'Segoe UI', Roboto, sans-serif;
+            }
+            body {
+                margin: 0;
+                padding: 20px;
+                background: {{ fundo }};
+                color: white;
+            }
+            .painel { max-width: 1000px; margin: 20px auto; }
+            .cartao {
+                background: {{ card }};
+                border: 1px solid {{ borda }};
+                border-radius: 12px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }
+            h1, h2, h3 { color: {{ ouro }}; }
+            input, textarea, select {
+                width: 100%;
+                padding: 12px;
+                margin: 7px 0 15px;
+                border-radius: 7px;
+                border: 1px solid {{ borda }};
+                background: {{ fundo }};
+                color: white;
+                font-size: 14px;
+            }
+            input[type=file] { padding: 10px; }
+            label { color: #D1D5DB; font-size: 13px; }
+            button, .botao {
+                display: inline-block;
+                padding: 11px 15px;
+                border: none;
+                border-radius: 7px;
+                background: {{ ouro }};
+                color: {{ fundo }};
+                font-weight: bold;
+                text-decoration: none;
+                cursor: pointer;
+                font-size: 13px;
+            }
+            .secundario { background: {{ borda }}; color: white; }
+            .perigo { background: #B91C1C; color: white; }
+            .sucesso { color: #86EFAC; }
+            .inativo { color: #FCA5A5; }
+            .produto {
+                border-bottom: 1px solid {{ borda }};
+                padding: 15px 0;
+            }
+            .produto:last-child { border-bottom: none; }
+            .acoes {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-top: 12px;
+            }
+            .mensagem {
+                padding: 12px;
+                background: #102B36;
+                border: 1px solid #287A61;
+                border-radius: 7px;
+                margin-bottom: 15px;
+            }
+            .topo {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+            .miniatura {
+                width: 105px;
+                height: 85px;
+                object-fit: cover;
+                border-radius: 8px;
+                border: 1px solid {{ borda }};
+                background: {{ fundo }};
+            }
+            @media(max-width:600px) {
+                body { padding: 10px; }
+                .cartao { padding: 15px; }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="painel">
+            {% if logado %}
+            <div class="topo cartao">
+                <div>
+                    <h2>IWG Technological Solutions</h2>
+                    <p>Área administrativa</p>
+                </div>
+                <div class="acoes">
+                    <a class="botao secundario" href="{{ url_for('home') }}">Ver site</a>
+                    <a class="botao secundario" href="{{ url_for('admin_pedidos') }}">Pedidos</a>
+                    <a class="botao secundario" href="{{ url_for('admin_senha') }}">Alterar senha</a>
+                    <a class="botao perigo" href="{{ url_for('admin_sair') }}">Sair</a>
+                </div>
+            </div>
+            {% endif %}
+            {% for mensagem in mensagens %}
+                <div class="mensagem">{{ mensagem }}</div>
+            {% endfor %}
+            {{ conteudo | safe }}
+        </main>
+    </body>
+    </html>
+    """,
+    titulo=titulo,
+    conteudo=conteudo,
+    fundo=AZUL_FUNDO,
+    card=COR_CARD,
+    borda=COR_BORDA,
+    ouro=COR_OURO,
+    logado=bool(session.get("admin_logado")),
+    mensagens=get_flashed_messages()
     )
 
 
 # =========================================================
-# VISUAL DO SITE
+# ESTILOS DO SITE
 # =========================================================
 
-BASE_HTML = """
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#020526">
-<meta name="description" content="IWG Technological Solutions. Tecnologia, eletrônicos, importações e desenvolvimento de software.">
-<title>{{ titulo }} | IWG Technological Solutions</title>
-<style>
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body {
-    margin: 0;
-    background: {{ fundo }};
-    color: white;
-    font-family: Arial, Helvetica, sans-serif;
-}
-a { color: inherit; text-decoration: none; }
-header {
-    text-align: center;
-    padding: 35px 20px;
-    background-color: {{ card }};
-    border-bottom: 1px solid {{ borda }};
-}
-.avatar {
-    width: 140px;
-    height: 140px;
-    border-radius: 50%;
-    border: 3px solid {{ ouro }};
-    margin: 0 auto 15px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background-color: {{ fundo }};
-    overflow: hidden;
-    box-shadow: 0 4px 20px rgba(247,192,74,.25);
-}
-.avatar img { width: 100%; height: 100%; object-fit: cover; }
-h1 {
-    color: {{ ouro }};
-    font-size: 20px;
-    margin-bottom: 4px;
-    text-transform: uppercase;
-    letter-spacing: .5px;
-}
-.sub-titulo {
-    color: #9CA3AF;
-    font-size: 12px;
-    font-style: italic;
-    margin-bottom: 6px;
-}
-.sub-marca { color: #9CA3AF; font-size: 11px; }
-nav {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 16px;
-    background: #080C38;
-    border-bottom: 1px solid {{ borda }};
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
-nav a {
-    color: {{ ouro }};
-    font-size: 13px;
-    padding: 9px 12px;
-}
-nav a:hover {
-    background: {{ ouro }};
-    color: #020526;
-    border-radius: 6px;
-}
-.container { width: 92%; max-width: 1200px; margin: 30px auto; }
-.banner {
-    min-height: 430px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 60px 25px;
-    border: 1px solid {{ borda }};
-    border-radius: 18px;
-    margin-bottom: 55px;
+ESTILOS_SITE = f"""
+.container {{
+    max-width:1100px;
+    margin:20px auto;
+    padding:0 15px;
+}}
+.banner-iwg {{
+    position:relative;
+    overflow:hidden;
+    border:1px solid {COR_OURO};
+    border-radius:15px;
+    min-height:270px;
+    padding:35px;
+    margin-bottom:30px;
     background:
-        linear-gradient(90deg, rgba(2,5,38,.96), rgba(2,5,38,.75)),
-        url("{{ imagem_banner }}");
-    background-size: cover;
-    background-position: center;
-}
-.banner-conteudo { max-width: 850px; }
-.banner-etiqueta {
-    color: {{ ouro }};
-    font-size: 12px;
-    font-weight: bold;
-    letter-spacing: 3px;
-}
-.banner h2 {
-    color: {{ ouro }};
-    font-size: clamp(30px, 5vw, 52px);
-    line-height: 1.15;
-    margin: 20px 0;
-}
-.banner p {
-    color: #E5E7EB;
-    line-height: 1.8;
-    font-size: 17px;
-    max-width: 700px;
-    margin: 0 auto 25px;
-}
-.botao {
-    display: inline-block;
-    background: {{ ouro }};
-    color: #020526;
-    font-weight: bold;
-    padding: 13px 21px;
-    border: 0;
-    border-radius: 7px;
-    cursor: pointer;
-    margin: 5px;
-    font-size: 13px;
-}
-.botao-secundario {
-    background: transparent;
-    color: {{ ouro }};
-    border: 1px solid {{ ouro }};
-}
-.secao { color: {{ ouro }}; font-size: 25px; margin: 45px 0 20px; }
-.subsecao { color: #AEB6D2; line-height: 1.7; margin-bottom: 25px; }
-.grade {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-    gap: 22px;
-}
-.produto {
-    background: {{ card }};
-    border: 1px solid {{ borda }};
-    border-radius: 13px;
-    overflow: hidden;
-}
-.produto img {
-    width: 100%;
-    height: 210px;
-    object-fit: cover;
-    background: #101641;
-}
-.produto-conteudo { padding: 17px; }
-.categoria {
-    color: {{ ouro }};
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-.produto h3 { color: {{ ouro }}; font-size: 17px; line-height: 1.4; }
-.produto p { color: #C4C8D5; line-height: 1.6; font-size: 13px; }
-.preco { font-size: 21px; color: {{ ouro }}; font-weight: bold; margin: 15px 0; }
-.servico {
-    background: linear-gradient(145deg, #0A0E45, #111A55);
-    border: 1px solid {{ borda }};
-    border-radius: 13px;
-    padding: 25px;
-}
-.servico h3 { color: {{ ouro }}; font-size: 18px; }
-.servico p { color: #C4C8D5; line-height: 1.7; font-size: 14px; }
-.sobre {
-    background: linear-gradient(135deg, #0A0E45, #080C38);
-    border: 1px solid {{ borda }};
-    border-radius: 15px;
-    padding: 30px;
-    margin-top: 50px;
-    line-height: 1.8;
-    color: #D1D5DB;
-}
-.sobre h2 { color: {{ ouro }}; }
-.filtros { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 25px; }
-.filtros a {
-    padding: 9px 15px;
-    border: 1px solid {{ borda }};
-    border-radius: 20px;
-    color: white;
-    font-size: 13px;
-}
-.filtros a:hover, .filtros a.ativo { background: {{ ouro }}; color: #020526; }
-.formulario {
-    background: {{ card }};
-    border: 1px solid {{ borda }};
-    padding: 24px;
-    border-radius: 12px;
-    max-width: 800px;
-    margin: 25px auto;
-}
-input, textarea, select {
-    display: block;
-    width: 100%;
-    padding: 12px;
-    margin: 9px 0 16px;
-    background: #05092F;
-    color: white;
-    border: 1px solid {{ borda }};
-    border-radius: 6px;
-}
-label { color: {{ ouro }}; }
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 20px 0;
-    background: {{ card }};
-}
-td, th { border-bottom: 1px solid {{ borda }}; padding: 12px; text-align: left; }
-th { color: {{ ouro }}; }
-.aviso {
-    padding: 15px;
-    background: #111A55;
-    border-radius: 8px;
-    color: #D1D5DB;
-    margin: 25px 0;
-    font-size: 13px;
-    line-height: 1.6;
-}
-.flash {
-    background: #182653;
-    border: 1px solid {{ ouro }};
-    padding: 12px;
-    border-radius: 8px;
-    margin: 12px 0;
-    color: white;
-}
-.cartao-indicador {
-    background: {{ card }};
-    border: 1px solid {{ borda }};
-    border-radius: 12px;
-    padding: 22px;
-}
-.cartao-indicador span { color: #AEB6D2; font-size: 13px; }
-.cartao-indicador strong {
-    display: block;
-    color: {{ ouro }};
-    font-size: 30px;
-    margin-top: 10px;
-}
-.badge-status {
-    display: inline-block;
-    padding: 5px 9px;
-    border: 1px solid {{ ouro }};
-    border-radius: 15px;
-    color: {{ ouro }};
-    font-size: 11px;
-}
-.acoes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.acoes form { margin: 0; }
-footer {
-    text-align: center;
-    padding: 40px 15px;
-    color: #9CA3AF;
-    border-top: 1px solid {{ borda }};
-    margin-top: 60px;
-    font-size: 13px;
-    line-height: 1.9;
-    background: #05082C;
-}
-footer strong { color: {{ ouro }}; font-size: 16px; }
-footer a { color: {{ ouro }}; margin: 0 5px; }
-@media(max-width: 700px) {
-    header { padding: 25px 10px; }
-    .container { width: 94%; }
-    .banner { min-height: 390px; padding: 35px 15px; }
-    .banner h2 { font-size: 29px; }
-    .banner p { font-size: 14px; }
-    .secao { font-size: 22px; }
-    nav { gap: 3px; padding: 10px 4px; }
-    nav a { font-size: 11px; padding: 8px 7px; }
-    td, th { padding: 7px; font-size: 11px; }
-    .tabela-responsiva { overflow-x: auto; }
-}
-</style>
-</head>
-<body>
+        linear-gradient(90deg,rgba(2,5,38,.97),rgba(10,14,69,.82)),
+        url('{IMAGENS_PROVISORIAS["geral"]}');
+    background-size:cover;
+    background-position:center;
+    display:flex;
+    align-items:center;
+}}
+.banner-conteudo {{ max-width:650px; }}
+.banner-selo {{
+    color:{COR_OURO};
+    font-size:11px;
+    font-weight:bold;
+    letter-spacing:2px;
+    margin-bottom:12px;
+}}
+.banner-iwg h2 {{
+    color:white;
+    font-size:30px;
+    line-height:1.2;
+    margin-bottom:12px;
+}}
+.banner-iwg p {{
+    color:#D1D5DB;
+    font-size:14px;
+    line-height:1.7;
+    margin-bottom:20px;
+}}
+.botao-destaque {{
+    display:inline-block;
+    background:{COR_OURO};
+    color:{AZUL_FUNDO};
+    padding:13px 20px;
+    border-radius:7px;
+    text-decoration:none;
+    font-size:12px;
+    font-weight:bold;
+}}
+.botao-contorno {{
+    display:inline-block;
+    border:1px solid {COR_OURO};
+    color:{COR_OURO};
+    padding:12px 18px;
+    border-radius:7px;
+    text-decoration:none;
+    font-size:12px;
+    font-weight:bold;
+    margin-left:8px;
+}}
+.titulo-secao {{
+    color:{COR_OURO};
+    font-size:15px;
+    letter-spacing:.7px;
+    margin:30px 0 15px;
+}}
+.grade-servicos {{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:14px;
+    margin-bottom:30px;
+}}
+.servico-card {{
+    background:linear-gradient(145deg,{COR_CARD},#10164D);
+    border:1px solid {COR_BORDA};
+    border-radius:12px;
+    padding:20px;
+    min-height:150px;
+}}
+.servico-icone {{ font-size:27px; margin-bottom:12px; }}
+.servico-card h3 {{
+    color:{COR_OURO};
+    font-size:14px;
+    margin-bottom:8px;
+}}
+.servico-card p {{
+    color:#B8C0D4;
+    font-size:12px;
+    line-height:1.6;
+}}
+.filtros {{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin:15px 0 20px;
+}}
+.filtro {{
+    display:inline-block;
+    padding:9px 14px;
+    border:1px solid {COR_BORDA};
+    border-radius:20px;
+    color:#D1D5DB;
+    text-decoration:none;
+    font-size:11px;
+    background:{COR_CARD};
+}}
+.filtro.ativo {{
+    background:{COR_OURO};
+    border-color:{COR_OURO};
+    color:{AZUL_FUNDO};
+    font-weight:bold;
+}}
+.grid-produtos {{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+    gap:15px;
+    margin-top:15px;
+}}
+.card-produto {{
+    background:{COR_CARD};
+    border:1px solid {COR_BORDA};
+    border-radius:12px;
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+    transition:transform .2s,border-color .2s;
+}}
+.card-produto:hover {{
+    transform:translateY(-3px);
+    border-color:{COR_OURO};
+}}
+.card-produto img {{
+    width:100%;
+    height:190px;
+    object-fit:cover;
+    background:{AZUL_FUNDO};
+}}
+.produto-conteudo {{
+    padding:15px;
+    display:flex;
+    flex-direction:column;
+    flex:1;
+}}
+.produto-categoria {{
+    display:inline-block;
+    align-self:flex-start;
+    background:{COR_BORDA};
+    color:{COR_OURO};
+    font-size:9px;
+    padding:4px 8px;
+    border-radius:4px;
+    font-weight:bold;
+}}
+.produto-conteudo h3 {{
+    color:white;
+    font-size:15px;
+    margin:10px 0 7px;
+}}
+.produto-descricao {{
+    color:#9CA3AF;
+    font-size:12px;
+    line-height:1.5;
+    margin-bottom:15px;
+}}
+.produto-preco {{
+    color:{COR_OURO};
+    font-weight:bold;
+    font-size:17px;
+    margin:10px 0 12px;
+}}
+.botao-produto {{
+    display:block;
+    width:100%;
+    text-align:center;
+    background:{COR_OURO};
+    color:{AZUL_FUNDO};
+    border:0;
+    padding:11px;
+    border-radius:6px;
+    font-weight:bold;
+    font-size:12px;
+    text-decoration:none;
+    cursor:pointer;
+}}
+.botao-detalhes {{
+    display:block;
+    width:100%;
+    text-align:center;
+    color:{COR_OURO};
+    border:1px solid {COR_OURO};
+    padding:10px;
+    border-radius:6px;
+    font-weight:bold;
+    font-size:12px;
+    text-decoration:none;
+    margin-bottom:8px;
+}}
+.lista-secao {{
+    background-color:{COR_CARD};
+    border:1px solid {COR_BORDA};
+    border-radius:12px;
+    overflow:hidden;
+    margin-bottom:25px;
+}}
+.item-lista {{
+    padding:14px 20px;
+    border-bottom:1px solid {COR_BORDA};
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    text-decoration:none;
+    color:white;
+}}
+.item-lista:last-child {{ border-bottom:none; }}
+@media(max-width:600px) {{
+    .banner-iwg {{ min-height:290px; padding:24px 19px; }}
+    .banner-iwg h2 {{ font-size:24px; }}
+    .banner-iwg p {{ font-size:12px; }}
+    .botao-contorno {{ margin:9px 0 0; }}
+    .grid-produtos {{
+        grid-template-columns:repeat(2,minmax(0,1fr));
+        gap:10px;
+    }}
+    .card-produto img {{ height:135px; }}
+    .produto-conteudo {{ padding:10px; }}
+    .produto-conteudo h3 {{ font-size:12px; }}
+    .produto-descricao {{ font-size:10px; }}
+    .produto-preco {{ font-size:14px; }}
+}}
+"""
+
+
+# =========================================================
+# CABECALHO ORIGINAL
+# =========================================================
+
+CABECALHO_ORIGINAL = """
 <header>
     <div class="avatar">
         <img src="/arquivos/logo.jpg" alt="Logo IWG"
@@ -595,585 +853,378 @@ footer a { color: {{ ouro }}; margin: 0 5px; }
         IWG Technological Solutions • Catálogo Oficial
     </div>
 </header>
-<nav>
-    <a href="{{ url_for('inicio') }}">Início</a>
-    <a href="{{ url_for('inicio') }}#catalogo">Catálogo</a>
-    <a href="{{ url_for('inicio') }}#servicos">Serviços</a>
-    <a href="{{ url_for('inicio') }}#sobre">Sobre</a>
-    <a href="{{ url_for('carrinho') }}">Carrinho ({{ quantidade_carrinho }})</a>
-    <a href="https://wa.me/{{ whatsapp }}" target="_blank">WhatsApp</a>
-</nav>
-<div class="container">
-{% with mensagens = get_flashed_messages() %}
-    {% for mensagem in mensagens %}
-        <div class="flash">{{ mensagem }}</div>
-    {% endfor %}
-{% endwith %}
-{{ conteudo|safe }}
-</div>
-<footer>
-    <p><strong>IWG TECHNOLOGICAL SOLUTIONS</strong></p>
-    <p>Tecnologia • Eletrônicos • Importações • Desenvolvimento de Software</p>
-    <p>
-        <a href="{{ instagram }}" target="_blank">Instagram</a> |
-        <a href="{{ linkedin }}" target="_blank">LinkedIn</a> |
-        <a href="{{ youtube }}" target="_blank">YouTube</a> |
-        <a href="https://wa.me/{{ whatsapp }}" target="_blank">WhatsApp</a>
-    </p>
-    <p>© IWG Technological Solutions</p>
-    <a href="{{ url_for('admin_login') }}">Área administrativa</a>
-</footer>
-</body>
-</html>
 """
 
 
-def render_site(conteudo, titulo="Início"):
-    return render_template_string(
-        BASE_HTML,
-        conteudo=conteudo,
-        titulo=titulo,
-        fundo=AZUL_FUNDO,
-        ouro=COR_OURO,
-        card=COR_CARD,
-        borda=COR_BORDA,
-        whatsapp=WHATSAPP,
-        instagram=INSTAGRAM,
-        linkedin=LINKEDIN,
-        youtube=YOUTUBE,
-        imagem_banner=IMAGEM_BANNER,
-        quantidade_carrinho=quantidade_carrinho()
-    )
-
-
 # =========================================================
-# PAGINA INICIAL E CATALOGO
+# PAGINA PRINCIPAL
 # =========================================================
 
 @app.route("/")
-def inicio():
-    categoria = request.args.get("categoria", "")
+def home():
+    produtos = buscar_produtos(apenas_ativos=True)
+    categorias = buscar_categorias()
 
-    with conectar() as conn:
-        categorias = conn.execute("""
-            SELECT DISTINCT categoria FROM produtos
-            WHERE ativo = 1 ORDER BY categoria
-        """).fetchall()
+    categoria_selecionada = request.args.get(
+        "categoria", ""
+    ).strip()
 
-        if categoria:
-            produtos = conn.execute("""
-                SELECT * FROM produtos
-                WHERE ativo = 1 AND categoria = ?
-                ORDER BY id DESC
-            """, (categoria,)).fetchall()
-        else:
-            produtos = conn.execute("""
-                SELECT * FROM produtos
-                WHERE ativo = 1 ORDER BY id DESC
-            """).fetchall()
-
-    html = """
-    <section class="banner">
-        <div class="banner-conteudo">
-            <div class="banner-etiqueta">Tecnologia • Inovação • Soluções</div>
-            <h2>Tecnologia que transforma ideias em soluções.</h2>
-            <p>
-                Bem-vindo à IWG Technological Solutions.
-                Desenvolvimento de software, automações,
-                eletrônicos, importações e soluções digitais
-                para conectar você ao futuro.
-            </p>
-            <a class="botao" href="#catalogo">Conheça nosso catálogo</a>
-            <a class="botao botao-secundario"
-               href="https://wa.me/{{ whatsapp }}">Fale conosco</a>
-        </div>
-    </section>
-
-    <section id="servicos">
-        <h2 class="secao">Nossas soluções</h2>
-        <p class="subsecao">Tecnologia aplicada às necessidades de pessoas e empresas.</p>
-        <div class="grade">
-            <div class="servico">
-                <h3>💻 Desenvolvimento de Software</h3>
-                <p>Criação de sistemas, aplicativos, plataformas e soluções personalizadas.</p>
-            </div>
-            <div class="servico">
-                <h3>⚙️ Automação e Inteligência</h3>
-                <p>Automação de tarefas, integração de processos e ferramentas digitais.</p>
-            </div>
-            <div class="servico">
-                <h3>🌐 Consultoria em Tecnologia</h3>
-                <p>Arquitetura de sistemas, planejamento e orientação tecnológica.</p>
-            </div>
-            <div class="servico">
-                <h3>📱 Eletrônicos e Importações</h3>
-                <p>Produtos, acessórios e soluções tecnológicas selecionadas.</p>
-            </div>
-        </div>
-    </section>
-
-    <section id="catalogo">
-        <h2 class="secao">Catálogo IWG</h2>
-        <p class="subsecao">Conheça nossos produtos, serviços e soluções digitais.</p>
-        <div class="filtros">
-            <a class="{{ 'ativo' if not categoria else '' }}"
-               href="{{ url_for('inicio') }}">Todos</a>
-            {% for cat in categorias %}
-                <a class="{{ 'ativo' if categoria == cat['categoria'] else '' }}"
-                   href="{{ url_for('inicio', categoria=cat['categoria']) }}">
-                    {{ cat['categoria'] }}
-                </a>
-            {% endfor %}
-        </div>
-        <div class="grade">
-        {% for p in produtos %}
-            <article class="produto">
-                <a href="{{ url_for('produto_detalhe', pid=p['id']) }}">
-                    <img src="{{ imagem_produto(p) }}" alt="{{ p['nome'] }}">
-                </a>
-                <div class="produto-conteudo">
-                    <span class="categoria">{{ p['categoria'] }}</span>
-                    <h3>{{ p['nome'] }}</h3>
-                    <p>{{ p['descricao'] }}</p>
-                    <div class="preco">{{ dinheiro(p['preco']) }}</div>
-                    {% if p['estoque'] is not none %}
-                        <p>Estoque: {{ p['estoque'] }}</p>
-                    {% endif %}
-                    <a class="botao" href="{{ url_for('produto_detalhe', pid=p['id']) }}">
-                        Ver produto
-                    </a>
-                </div>
-            </article>
-        {% else %}
-            <p>Nenhum produto cadastrado nesta categoria.</p>
-        {% endfor %}
-        </div>
-    </section>
-
-    <section class="sobre" id="sobre">
-        <h2>Sobre a IWG Technological Solutions</h2>
-        <p>
-            A IWG Technological Solutions atua com tecnologia,
-            desenvolvimento de software, automação, consultoria,
-            eletrônicos e soluções digitais.
-        </p>
-        <p>
-            Nosso compromisso é oferecer inovação, qualidade
-            e atendimento próximo aos nossos clientes.
-        </p>
-    </section>
-    """
-
-    return render_site(
-        render_template_string(
-            html,
-            produtos=produtos,
-            categorias=categorias,
-            categoria=categoria,
-            dinheiro=dinheiro,
-            imagem_produto=imagem_produto,
-            whatsapp=WHATSAPP
-        )
-    )
-
-
-@app.route("/produto/<int:pid>")
-def produto_detalhe(pid):
-    with conectar() as conn:
-        produto = conn.execute(
-            "SELECT * FROM produtos WHERE id=? AND ativo=1",
-            (pid,)
-        ).fetchone()
-
-    if not produto:
-        abort(404)
-
-    html = """
-    <h2 class="secao">{{ p['nome'] }}</h2>
-    <div class="grade">
-        <div class="produto">
-            <img src="{{ imagem_produto(p) }}" alt="{{ p['nome'] }}">
-        </div>
-        <div class="produto-conteudo">
-            <span class="categoria">{{ p['categoria'] }}</span>
-            <p>{{ p['descricao'] }}</p>
-            <div class="preco">{{ dinheiro(p['preco']) }}</div>
-            {% if p['estoque'] is not none %}
-                <p>Disponível: {{ p['estoque'] }}</p>
-            {% endif %}
-            <form method="post" action="{{ url_for('adicionar_carrinho', pid=p['id']) }}">
-                <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-                <label>Quantidade</label>
-                <input type="number" name="quantidade" value="1" min="1" required>
-                <button class="botao">Adicionar ao carrinho</button>
-            </form>
-            <a class="botao botao-secundario" href="{{ url_for('inicio') }}">
-                Voltar ao catálogo
-            </a>
-        </div>
-    </div>
-    """
-
-    return render_site(
-        render_template_string(
-            html,
-            p=produto,
-            imagem_produto=imagem_produto,
-            dinheiro=dinheiro
-        ),
-        produto["nome"]
-    )
-
-
-# =========================================================
-# CARRINHO
-# =========================================================
-
-@app.route("/adicionar-carrinho/<int:pid>", methods=["POST"])
-def adicionar_carrinho(pid):
-    validar_csrf()
-
-    try:
-        quantidade = int(request.form.get("quantidade", 1))
-    except ValueError:
-        quantidade = 1
-
-    if quantidade < 1 or quantidade > 99:
-        flash("Quantidade inválida.")
-        return redirect(url_for("inicio"))
-
-    with conectar() as conn:
-        produto = conn.execute(
-            "SELECT * FROM produtos WHERE id=? AND ativo=1",
-            (pid,)
-        ).fetchone()
-
-    if not produto:
-        flash("Produto não encontrado.")
-        return redirect(url_for("inicio"))
-
-    carrinho = session.get("carrinho", {})
-    atual = int(carrinho.get(str(pid), 0))
-    nova = atual + quantidade
-
-    if produto["estoque"] is not None and nova > produto["estoque"]:
-        flash("Quantidade maior que o estoque disponível.")
-        return redirect(url_for("produto_detalhe", pid=pid))
-
-    carrinho[str(pid)] = nova
-    session["carrinho"] = carrinho
-    flash("Produto adicionado ao carrinho!")
-    return redirect(url_for("carrinho"))
-
-
-@app.route("/carrinho")
-def carrinho():
-    carrinho_atual = session.get("carrinho", {})
-    itens = []
-    total = 0
-
-    with conectar() as conn:
-        for pid, quantidade in carrinho_atual.items():
-            produto = conn.execute(
-                "SELECT * FROM produtos WHERE id=? AND ativo=1",
-                (pid,)
-            ).fetchone()
-
-            if produto:
-                subtotal = produto["preco"] * int(quantidade)
-                itens.append({
-                    "produto": produto,
-                    "quantidade": int(quantidade),
-                    "subtotal": subtotal
-                })
-                total += subtotal
-
-    html = """
-    <h2 class="secao">Meu carrinho</h2>
-    {% if itens %}
-    <div class="tabela-responsiva">
-    <table>
-        <tr><th>Produto</th><th>Quantidade</th><th>Subtotal</th><th>Ação</th></tr>
-        {% for item in itens %}
-        <tr>
-            <td>{{ item.produto['nome'] }}</td>
-            <td>{{ item.quantidade }}</td>
-            <td>{{ dinheiro(item.subtotal) }}</td>
-            <td>
-                <form method="post" action="{{ url_for('remover_carrinho', pid=item.produto['id']) }}">
-                    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-                    <button class="botao botao-secundario">Remover</button>
-                </form>
-            </td>
-        </tr>
-        {% endfor %}
-    </table>
-    </div>
-    <h2 class="preco">Total: {{ dinheiro(total) }}</h2>
-    <a class="botao" href="{{ url_for('checkout') }}">Continuar para identificação e entrega</a>
-    {% else %}
-    <p>Seu carrinho está vazio.</p>
-    {% endif %}
-    <a class="botao botao-secundario" href="{{ url_for('inicio') }}">Voltar ao catálogo</a>
-    """
-
-    return render_site(
-        render_template_string(
-            html, itens=itens, total=total, dinheiro=dinheiro
-        ),
-        "Carrinho"
-    )
-
-
-@app.route("/remover-carrinho/<int:pid>", methods=["POST"])
-def remover_carrinho(pid):
-    validar_csrf()
-    carrinho_atual = session.get("carrinho", {})
-    carrinho_atual.pop(str(pid), None)
-    session["carrinho"] = carrinho_atual
-    flash("Produto removido.")
-    return redirect(url_for("carrinho"))
-
-
-# =========================================================
-# CHECKOUT
-# =========================================================
-
-@app.route("/checkout", methods=["GET", "POST"])
-def checkout():
-    carrinho_atual = session.get("carrinho", {})
-
-    if not carrinho_atual:
-        flash("Seu carrinho está vazio.")
-        return redirect(url_for("carrinho"))
-
-    itens = []
-    total = 0
-
-    with conectar() as conn:
-        for pid, quantidade in carrinho_atual.items():
-            produto = conn.execute(
-                "SELECT * FROM produtos WHERE id=? AND ativo=1",
-                (pid,)
-            ).fetchone()
-
-            if not produto:
-                continue
-
-            quantidade = int(quantidade)
-
-            if produto["estoque"] is not None and quantidade > produto["estoque"]:
-                flash(f"Estoque insuficiente para {produto['nome']}.")
-                return redirect(url_for("carrinho"))
-
-            subtotal = produto["preco"] * quantidade
-            itens.append({
-                "produto": produto,
-                "quantidade": quantidade,
-                "subtotal": subtotal
-            })
-            total += subtotal
-
-    if not itens:
-        flash("Não há produtos disponíveis no carrinho.")
-        return redirect(url_for("carrinho"))
-
-    if request.method == "POST":
-        validar_csrf()
-
-        nome = request.form.get("nome", "").strip()
-        telefone = re.sub(
-            r"\D", "", request.form.get("telefone", "")
-        )
-        cpf = re.sub(r"\D", "", request.form.get("cpf", ""))
-        cep = re.sub(r"\D", "", request.form.get("cep", ""))
-        rua = request.form.get("rua", "").strip()
-        numero = request.form.get("numero", "").strip()
-        complemento = request.form.get("complemento", "").strip()
-        bairro = request.form.get("bairro", "").strip()
-        cidade = request.form.get("cidade", "").strip()
-        estado = request.form.get("estado", "").strip().upper()
-        observacoes = request.form.get("observacoes", "").strip()
-
-        if not nome or len(nome) < 3:
-            flash("Informe seu nome completo.")
-            return redirect(url_for("checkout"))
-
-        if not 10 <= len(telefone) <= 13:
-            flash("Informe um telefone ou WhatsApp válido.")
-            return redirect(url_for("checkout"))
-
-        if len(cpf) != 11 or cpf == cpf[0] * 11:
-            flash("Informe um CPF com 11 números válido.")
-            return redirect(url_for("checkout"))
-
-        # Validação dos dígitos verificadores do CPF.
-        numeros = [int(n) for n in cpf]
-        soma = sum(numeros[i] * (10 - i) for i in range(9))
-        digito1 = (soma * 10) % 11
-        digito1 = 0 if digito1 == 10 else digito1
-
-        soma = sum(numeros[i] * (11 - i) for i in range(10))
-        digito2 = (soma * 10) % 11
-        digito2 = 0 if digito2 == 10 else digito2
-
-        if numeros[9] != digito1 or numeros[10] != digito2:
-            flash("O CPF informado não passou na validação.")
-            return redirect(url_for("checkout"))
-
-        if (
-            len(cep) != 8 or not rua or not numero
-            or not bairro or not cidade or len(estado) != 2
-        ):
-            flash("Preencha corretamente todos os campos obrigatórios do endereço.")
-            return redirect(url_for("checkout"))
-
-        with conectar() as conn:
-            cursor = conn.execute("""
-                INSERT INTO pedidos (
-                    cliente, observacoes, total, status,
-                    telefone, cep, rua, numero, complemento,
-                    bairro, cidade, estado
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                nome, observacoes, total,
-                "Aguardando confirmação no WhatsApp",
-                telefone, cep, rua, numero, complemento,
-                bairro, cidade, estado
-            ))
-
-            pedido_id = cursor.lastrowid
-
-            for item in itens:
-                produto = item["produto"]
-                quantidade = item["quantidade"]
-
-                conn.execute("""
-                    INSERT INTO pedido_itens (
-                        pedido_id, produto_id, nome_produto,
-                        quantidade, preco_unitario, subtotal
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    pedido_id,
-                    produto["id"],
-                    produto["nome"],
-                    quantidade,
-                    produto["preco"],
-                    item["subtotal"]
-                ))
-
-                if produto["estoque"] is not None:
-                    conn.execute("""
-                        UPDATE produtos
-                        SET estoque = estoque - ?
-                        WHERE id = ?
-                    """, (quantidade, produto["id"]))
-
-        endereco = (
-            f"{rua}, {numero}, {complemento}, {bairro}, "
-            f"{cidade}/{estado}, CEP {cep}"
-        )
-
-        mensagem = [
-            "*NOVO PEDIDO - IWG TECHNOLOGICAL SOLUTIONS*",
-            "",
-            f"*Pedido:* #{pedido_id}",
-            f"*Cliente:* {nome}",
-            f"*Telefone:* {telefone}",
-            f"*CPF:* {cpf}",
-            f"*Endereço:* {endereco}",
-            "",
-            "*PRODUTOS:*"
+    if categoria_selecionada:
+        produtos = [
+            p for p in produtos
+            if (p["categoria"] or "").lower()
+            == categoria_selecionada.lower()
         ]
 
-        for item in itens:
-            mensagem.append(
-                f"- {item['produto']['nome']} | "
-                f"Qtd: {item['quantidade']} | "
-                f"Unitário: {dinheiro(item['produto']['preco'])} | "
-                f"Subtotal: {dinheiro(item['subtotal'])}"
-            )
+    carrinho = session.get("carrinho", {})
+    total_itens = sum(carrinho.values())
 
-        mensagem.extend([
-            "",
-            f"*TOTAL: {dinheiro(total)}*",
-            "",
-            f"*Observações:* {observacoes or 'Nenhuma'}",
-            "",
-            "O frete e eventuais tributos poderão gerar custos adicionais, "
-            "especialmente em envios interestaduais. Os valores serão "
-            "confirmados antes da finalização da compra.",
-            "",
-            "Após a postagem para o endereço informado, a IWG fornecerá "
-            "o código de rastreamento.",
-            "",
-            "Este pedido aguarda confirmação pelo WhatsApp."
-        ])
+    topo_carrinho = ""
 
-        session["carrinho"] = {}
-        flash("Pedido registrado. Continue no WhatsApp para enviar sua solicitação.")
+    if total_itens > 0:
+        topo_carrinho = f"""
+        <div style="text-align:right;margin-bottom:15px;">
+            <a href="/carrinho" style="
+                background-color:{COR_CARD};
+                border:1px solid {COR_OURO};
+                color:{COR_OURO};
+                padding:10px 20px;
+                border-radius:8px;
+                text-decoration:none;
+                font-weight:bold;
+                font-size:13px;
+                display:inline-block;">
+                🛒 Ver Meu Carrinho ({total_itens} itens)
+            </a>
+        </div>
+        """
 
-        url = (
-            f"https://wa.me/{WHATSAPP}?text="
-            f"{quote(chr(10).join(mensagem), safe='')}"
-        )
-        return redirect(url)
-
-    html = """
-    <h2 class="secao">Finalizar solicitação</h2>
-    <div class="aviso">
-        Preencha seus dados para que possamos confirmar seu pedido pelo WhatsApp.
-        O CPF será enviado na mensagem do WhatsApp e não será armazenado no banco de dados.
-    </div>
-    <form class="formulario" method="post">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-
-        <label>Nome completo *</label>
-        <input name="nome" required minlength="3">
-
-        <label>Telefone / WhatsApp *</label>
-        <input name="telefone" required placeholder="DDD + número">
-
-        <label>CPF *</label>
-        <input name="cpf" required maxlength="14" placeholder="000.000.000-00">
-
-        <label>CEP *</label>
-        <input name="cep" required maxlength="9" placeholder="00000-000">
-
-        <label>Rua *</label>
-        <input name="rua" required>
-
-        <label>Número *</label>
-        <input name="numero" required>
-
-        <label>Complemento</label>
-        <input name="complemento">
-
-        <label>Bairro *</label>
-        <input name="bairro" required>
-
-        <label>Cidade *</label>
-        <input name="cidade" required>
-
-        <label>Estado (UF) *</label>
-        <input name="estado" required maxlength="2" placeholder="ES">
-
-        <label>Observações</label>
-        <textarea name="observacoes" rows="4"></textarea>
-
-        <h3 class="preco">Total: {{ dinheiro(total) }}</h3>
-        <button class="botao">Registrar pedido e continuar no WhatsApp</button>
-    </form>
+    filtros_html = f"""
+        <a class="filtro {'ativo' if not categoria_selecionada else ''}"
+           href="/">Todos os produtos</a>
     """
 
-    return render_site(
-        render_template_string(
-            html, total=total, dinheiro=dinheiro
-        ),
-        "Finalizar pedido"
+    for categoria in categorias:
+        nome_categoria = categoria["categoria"]
+        ativo = (
+            categoria_selecionada.lower()
+            == nome_categoria.lower()
+        )
+
+        filtros_html += f"""
+        <a class="filtro {'ativo' if ativo else ''}"
+           href="/?categoria={quote(nome_categoria)}">
+           {escape(nome_categoria)}
+        </a>
+        """
+
+    cards_html = ""
+
+    for p in produtos:
+        imagem_url = obter_url_imagem(p)
+
+        cards_html += f"""
+        <div class="card-produto">
+            <a href="/produto/{p['id']}" style="display:block;">
+                <img src="{escape(imagem_url)}"
+                     alt="{escape(p['nome'])}"
+                     loading="lazy"
+                     onerror="this.onerror=null;this.src='{IMAGENS_PROVISORIAS['geral']}';">
+            </a>
+            <div class="produto-conteudo">
+                <span class="produto-categoria">
+                    {escape(p['categoria'] or 'Geral')}
+                </span>
+                <h3>{escape(p['nome'])}</h3>
+                <p class="produto-descricao">
+                    {escape(p['descricao'] or '')}
+                </p>
+                <div style="margin-top:auto;">
+                    <div class="produto-preco">
+                        R$ {formatar_preco(p['preco'])}
+                    </div>
+                    <a class="botao-detalhes"
+                       href="/produto/{p['id']}">
+                        Ver detalhes
+                    </a>
+                    <form action="/adicionar/{p['id']}" method="POST">
+                        <button class="botao-produto" type="submit">
+                            Adicionar ao Carrinho
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        """
+
+    if not produtos:
+        cards_html = """
+        <p style="color:#9CA3AF;padding:20px 0;">
+            Nenhum produto encontrado nesta categoria.
+            <a href="/" style="color:#F7C04A;">Ver todos os produtos</a>
+        </p>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>IWG Technological Solutions</title>
+        <style>
+            * {{
+                margin:0;
+                padding:0;
+                box-sizing:border-box;
+                font-family:-apple-system,BlinkMacSystemFont,
+                'Segoe UI',Roboto,sans-serif;
+            }}
+            body {{
+                background-color:{AZUL_FUNDO};
+                color:#ffffff;
+                padding-bottom:30px;
+            }}
+            header {{
+                text-align:center;
+                padding:35px 20px;
+                background-color:{COR_CARD};
+                border-bottom:1px solid {COR_BORDA};
+            }}
+            .avatar {{
+                width:140px;
+                height:140px;
+                border-radius:50%;
+                border:3px solid {COR_OURO};
+                margin:0 auto 15px auto;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                background-color:{AZUL_FUNDO};
+                overflow:hidden;
+                box-shadow:0 4px 15px rgba(247,192,74,.2);
+            }}
+            .avatar img {{
+                width:100%;
+                height:100%;
+                object-fit:cover;
+            }}
+            h1 {{
+                color:{COR_OURO};
+                font-size:20px;
+                margin-bottom:4px;
+                text-transform:uppercase;
+                letter-spacing:.5px;
+            }}
+            .sub-titulo {{
+                color:#9CA3AF;
+                font-size:12px;
+                font-style:italic;
+                margin-bottom:6px;
+            }}
+            .sub-marca {{ color:#9CA3AF; font-size:11px; }}
+            {ESTILOS_SITE}
+        </style>
+    </head>
+    <body>
+        {CABECALHO_ORIGINAL}
+        <div class="container">
+
+            <section class="banner-iwg">
+                <div class="banner-conteudo">
+                    <div class="banner-selo">
+                        TECNOLOGIA • INOVAÇÃO • SOLUÇÕES
+                    </div>
+                    <h2> Tecnologia que conecta você ao futuro.</h2>
+                    <p>
+                        Produtos eletrônicos, importações,
+                        desenvolvimento de softwares e soluções
+                        tecnológicas para pessoas e empresas.
+                    </p>
+                    <a class="botao-destaque" href="#catalogo">
+                        CONHECER CATÁLOGO
+                    </a>
+                    <a class="botao-contorno"
+                       href="https://wa.me/{WHATSAPP}"
+                       target="_blank" rel="noopener">
+                        FALAR COM A IWG
+                    </a>
+                </div>
+            </section>
+
+            <h3 class="titulo-secao">CANAIS & REDES SOCIAIS</h3>
+            <div class="lista-secao">
+                <a href="https://wa.me/{WHATSAPP}"
+                   target="_blank" rel="noopener" class="item-lista">
+                    <span>💬 WhatsApp Oficial</span><span>➔</span>
+                </a>
+                <a href="https://www.instagram.com/iulumozart"
+                   target="_blank" rel="noopener" class="item-lista">
+                    <span>📸 Instagram</span><span>➔</span>
+                </a>
+                <a href="https://www.linkedin.com/in/iuluwayner"
+                   target="_blank" rel="noopener" class="item-lista">
+                    <span>💼 LinkedIn Profissional</span><span>➔</span>
+                </a>
+                <a href="https://www.youtube.com/channel/UC8Z1DSRn3j5Rj4zMuy5sXIQ"
+                   target="_blank" rel="noopener" class="item-lista">
+                    <span>🔴 Canal YouTube</span><span>➔</span>
+                </a>
+            </div>
+
+            <h3 class="titulo-secao">SOLUÇÕES TECNOLÓGICAS IWG</h3>
+            <div class="grade-servicos">
+                <div class="servico-card">
+                    <div class="servico-icone">💻</div>
+                    <h3>Desenvolvimento de Softwares</h3>
+                    <p>Criação de sistemas, aplicações, automações e soluções digitais sob medida.</p>
+                </div>
+                <div class="servico-card">
+                    <div class="servico-icone">🌐</div>
+                    <h3>Importações</h3>
+                    <p>Produtos e acessórios tecnológicos, com atendimento e consulta de disponibilidade.</p>
+                </div>
+                <div class="servico-card">
+                    <div class="servico-icone">📱</div>
+                    <h3>Eletrônicos e Acessórios</h3>
+                    <p>Catálogo de produtos eletrônicos, acessórios e soluções para o dia a dia.</p>
+                </div>
+                <div class="servico-card">
+                    <div class="servico-icone">⚙️</div>
+                    <h3>Consultoria em Tecnologia</h3>
+                    <p>Orientação técnica, arquitetura de sistemas e planejamento de projetos digitais.</p>
+                </div>
+            </div>
+
+            {topo_carrinho}
+
+            <section id="catalogo">
+                <h3 class="titulo-secao">
+                    CATÁLOGO DE PRODUTOS E SOLUÇÕES
+                </h3>
+                <p style="color:#9CA3AF;font-size:11px;margin-bottom:12px;">
+                    Imagens ilustrativas. Consulte disponibilidade,
+                    estoque e condições antes de concluir seu pedido.
+                </p>
+                <div class="filtros">{filtros_html}</div>
+                <div class="grid-produtos">{cards_html}</div>
+            </section>
+
+            {gerar_rodape()}
+        </div>
+    </body>
+    </html>
+    """
+
+    return render_template_string(html)
+
+
+# =========================================================
+# PRODUTO INDIVIDUAL
+# =========================================================
+
+@app.route("/produto/<int:pid>")
+def pagina_produto(pid):
+    produto = buscar_produto(pid)
+
+    if not produto or not produto["ativo"]:
+        flash("Produto não encontrado ou indisponível.")
+        return redirect(url_for("home"))
+
+    imagem_url = obter_url_imagem(produto)
+
+    mensagem = (
+        f"Olá! Tenho interesse no produto: {produto['nome']} "
+        f"- R$ {formatar_preco(produto['preco'])}. "
+        "Gostaria de mais informações."
     )
+
+    whatsapp_url = (
+        f"https://wa.me/{WHATSAPP}?text={quote(mensagem)}"
+    )
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{escape(produto['nome'])} - IWG</title>
+        <style>
+            * {{ box-sizing:border-box; font-family:Arial,sans-serif; }}
+            body {{ margin:0; padding:20px; background:{AZUL_FUNDO}; color:white; }}
+            .detalhe {{
+                max-width:950px; margin:30px auto;
+                display:grid; grid-template-columns:1fr 1fr;
+                gap:25px; align-items:center;
+                background:{COR_CARD}; border:1px solid {COR_BORDA};
+                border-radius:15px; padding:20px;
+            }}
+            .detalhe img {{
+                width:100%; border-radius:10px;
+                object-fit:cover; max-height:420px;
+            }}
+            .detalhe h1 {{ color:{COR_OURO}; font-size:25px; margin:15px 0; }}
+            .descricao {{ color:#B8C0D4; font-size:14px; line-height:1.8; margin:15px 0; }}
+            .preco {{ color:{COR_OURO}; font-size:25px; font-weight:bold; margin:20px 0; }}
+            .botao {{
+                display:block; text-align:center; padding:13px;
+                border-radius:7px; background:{COR_OURO};
+                color:{AZUL_FUNDO}; text-decoration:none;
+                font-weight:bold; margin-top:10px;
+            }}
+            .botao-sec {{
+                display:block; text-align:center; padding:13px;
+                border:1px solid {COR_OURO}; color:{COR_OURO};
+                text-decoration:none; border-radius:7px; margin-top:10px;
+            }}
+            @media(max-width:650px) {{
+                .detalhe {{ grid-template-columns:1fr; }}
+                .detalhe h1 {{ font-size:21px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div style="max-width:950px;margin:10px auto;">
+            <a href="/" style="color:{COR_OURO};text-decoration:none;">
+                ← Voltar ao catálogo IWG
+            </a>
+        </div>
+        <main class="detalhe">
+            <div>
+                <img src="{escape(imagem_url)}"
+                     alt="{escape(produto['nome'])}"
+                     onerror="this.onerror=null;this.src='{IMAGENS_PROVISORIAS['geral']}';">
+            </div>
+            <div>
+                <span style="background:{COR_BORDA};color:{COR_OURO};padding:6px 10px;border-radius:5px;font-size:11px;">
+                    {escape(produto['categoria'] or 'Geral')}
+                </span>
+                <h1>{escape(produto['nome'])}</h1>
+                <p class="descricao">{escape(produto['descricao'] or '')}</p>
+                <div class="preco">R$ {formatar_preco(produto['preco'])}</div>
+                <form action="/adicionar/{produto['id']}" method="POST">
+                    <button type="submit" class="botao"
+                            style="width:100%;border:0;cursor:pointer;">
+                        Adicionar ao Carrinho
+                    </button>
+                </form>
+                <a class="botao-sec" href="{whatsapp_url}"
+                   target="_blank" rel="noopener">
+                    Consultar pelo WhatsApp
+                </a>
+                <p style="color:#9CA3AF;font-size:10px;margin-top:15px;line-height:1.6;">
+                    Imagens ilustrativas. Consulte disponibilidade,
+                    estoque e condições comerciais.
+                </p>
+            </div>
+        </main>
+        {gerar_rodape()}
+    </body>
+    </html>
+    """
+
+    return render_template_string(html)
 
 
 # =========================================================
@@ -1181,674 +1232,1091 @@ def checkout():
 # =========================================================
 
 @app.route("/admin", methods=["GET", "POST"])
-@app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
-    if session.get("admin"):
-        return redirect(url_for("admin_dashboard"))
+    if session.get("admin_logado"):
+        return redirect(url_for("admin_painel"))
 
     if request.method == "POST":
-        validar_csrf()
-
         usuario = request.form.get("usuario", "").strip()
         senha = request.form.get("senha", "")
 
-        with conectar() as conn:
-            admin = conn.execute(
-                "SELECT * FROM administradores WHERE usuario=?",
-                (usuario,)
-            ).fetchone()
+        with conectar() as db:
+            admin = db.execute("""
+                SELECT * FROM administradores
+                WHERE usuario = ?
+            """, (usuario,)).fetchone()
 
-        if admin and check_password_hash(admin["senha"], senha):
+        if admin and check_password_hash(admin["senha_hash"], senha):
             session.clear()
-            session["admin"] = admin["id"]
-            session["usuario"] = admin["usuario"]
-            flash("Bem-vindo ao painel administrativo.")
-            return redirect(url_for("admin_dashboard"))
+            session["admin_logado"] = True
+            session["admin_usuario"] = admin["usuario"]
+            flash("Login realizado com sucesso!")
+            return redirect(url_for("admin_painel"))
 
         flash("Usuário ou senha incorretos.")
 
-    html = """
-    <h2 class="secao">Área administrativa IWG</h2>
-    <form class="formulario" method="post">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <label>Usuário</label>
-        <input name="usuario" required>
-        <label>Senha</label>
-        <input type="password" name="senha" required>
-        <button class="botao">Entrar</button>
-    </form>
+    conteudo = f"""
+    <div class="cartao" style="max-width:420px;margin:70px auto;">
+        <div style="text-align:center;margin-bottom:25px;">
+            <h1>IWG</h1>
+            <h2>Painel Administrativo</h2>
+            <p style="color:#9CA3AF;">Entre para gerenciar seu catálogo.</p>
+        </div>
+        <form method="POST">
+            <label>Usuário</label>
+            <input type="text" name="usuario"
+                   placeholder="Digite seu usuário"
+                   required autocomplete="username">
+            <label>Senha</label>
+            <input type="password" name="senha"
+                   placeholder="Digite sua senha"
+                   required autocomplete="current-password">
+            <button type="submit" style="width:100%;">Entrar no Painel</button>
+        </form>
+        <p style="text-align:center;margin-top:20px;">
+            <a href="/" style="color:{COR_OURO};">Voltar ao site</a>
+        </p>
+    </div>
     """
 
-    return render_site(html, "Login administrativo")
+    return layout_admin(conteudo, "Login")
+
+
+@app.route("/admin/sair")
+@administrador_obrigatorio
+def admin_sair():
+    session.clear()
+    flash("Você saiu do painel administrativo.")
+    return redirect(url_for("admin_login"))
 
 
 # =========================================================
-# PAINEL ADMINISTRATIVO
+# PAINEL PRINCIPAL
 # =========================================================
 
 @app.route("/admin/painel")
-@admin_required
-def admin_dashboard():
-    with conectar() as conn:
-        total_produtos = conn.execute(
-            "SELECT COUNT(*) AS n FROM produtos"
-        ).fetchone()["n"]
+@administrador_obrigatorio
+def admin_painel():
+    produtos = buscar_produtos()
 
-        total_pedidos = conn.execute(
-            "SELECT COUNT(*) AS n FROM pedidos"
-        ).fetchone()["n"]
+    total = len(produtos)
+    ativos = sum(p["ativo"] for p in produtos)
+    inativos = total - ativos
 
-        total_vendas = conn.execute(
-            "SELECT COALESCE(SUM(total),0) AS n FROM pedidos "
-            "WHERE status NOT IN ('Cancelado')"
-        ).fetchone()["n"]
+    with conectar() as db:
+        total_pedidos = db.execute(
+            "SELECT COUNT(*) FROM pedidos"
+        ).fetchone()[0]
 
-        pedidos = conn.execute("""
-            SELECT * FROM pedidos ORDER BY id DESC LIMIT 20
-        """).fetchall()
+        pedidos_abertos = db.execute("""
+            SELECT COUNT(*) FROM pedidos
+            WHERE status NOT IN ('Concluído', 'Cancelado')
+        """).fetchone()[0]
 
-        produtos = conn.execute("""
-            SELECT * FROM produtos ORDER BY id DESC
-        """).fetchall()
+    lista_html = ""
 
-    html = """
-    <h2 class="secao">Painel administrativo</h2>
-    <p>Bem-vindo, {{ session.get('usuario') }}.</p>
+    for p in produtos:
+        status = (
+            '<span class="sucesso">ATIVO</span>'
+            if p["ativo"]
+            else '<span class="inativo">INATIVO</span>'
+        )
 
-    <div class="grade">
-        <div class="cartao-indicador">
-            <span>Produtos cadastrados</span>
-            <strong>{{ total_produtos }}</strong>
-        </div>
-        <div class="cartao-indicador">
-            <span>Pedidos registrados</span>
-            <strong>{{ total_pedidos }}</strong>
-        </div>
-        <div class="cartao-indicador">
-            <span>Total dos pedidos não cancelados</span>
-            <strong>{{ dinheiro(total_vendas) }}</strong>
-        </div>
-    </div>
+        imagem_url = obter_url_imagem(p)
 
-    <h2 class="secao">Gerenciamento</h2>
-    <a class="botao" href="{{ url_for('admin_novo') }}">Cadastrar produto</a>
-    <a class="botao botao-secundario" href="{{ url_for('admin_pedidos') }}">Ver pedidos</a>
-    <a class="botao botao-secundario" href="{{ url_for('admin_senha') }}">Alterar senha</a>
-    <a class="botao botao-secundario" href="{{ url_for('admin_logout') }}">Sair</a>
-
-    <h2 class="secao">Produtos</h2>
-    <div class="tabela-responsiva">
-    <table>
-        <tr><th>Produto</th><th>Preço</th><th>Estoque</th><th>Ativo</th><th>Ações</th></tr>
-        {% for p in produtos %}
-        <tr>
-            <td>{{ p['nome'] }}</td>
-            <td>{{ dinheiro(p['preco']) }}</td>
-            <td>{{ p['estoque'] if p['estoque'] is not none else 'Não controlado' }}</td>
-            <td>{{ 'Sim' if p['ativo'] else 'Não' }}</td>
-            <td>
-                <a class="botao" href="{{ url_for('admin_editar', pid=p['id']) }}">Editar</a>
-                <form method="post" action="{{ url_for('admin_excluir', pid=p['id']) }}">
-                    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-                    <button class="botao botao-secundario"
-                        onclick="return confirm('Excluir este produto?')">
-                        Excluir
+        lista_html += f"""
+        <div class="produto">
+            <div style="display:flex;gap:15px;align-items:center;flex-wrap:wrap;">
+                <img class="miniatura" src="{escape(imagem_url)}"
+                     alt="Foto do produto">
+                <div style="flex:1;min-width:180px;">
+                    <strong>{escape(p['nome'])}</strong>
+                    <p style="color:#9CA3AF;font-size:13px;margin-top:5px;">
+                        {escape(p['categoria'] or 'Geral')}
+                        | R$ {formatar_preco(p['preco'])}
+                    </p>
+                    <p style="color:#9CA3AF;font-size:12px;margin-top:5px;">
+                        {status}
+                    </p>
+                </div>
+            </div>
+            <div class="acoes">
+                <a class="botao" href="/admin/editar/{p['id']}">
+                    Editar produto e foto
+                </a>
+                <form method="POST" action="/admin/alternar/{p['id']}">
+                    <button type="submit" class="secundario">
+                        {"Desativar" if p['ativo'] else "Ativar"}
                     </button>
                 </form>
-            </td>
-        </tr>
-        {% endfor %}
-    </table>
+                <form method="POST" action="/admin/excluir/{p['id']}"
+                      onsubmit="return confirm('Deseja excluir este produto definitivamente?');">
+                    <button type="submit" class="perigo">Excluir</button>
+                </form>
+            </div>
+        </div>
+        """
+
+    if not produtos:
+        lista_html = '<p style="color:#9CA3AF;">Nenhum produto cadastrado ainda.</p>'
+
+    conteudo = f"""
+    <div class="cartao">
+        <h1>Bem-vindo ao painel IWG</h1>
+        <p style="color:#9CA3AF;">
+            Gerencie produtos, pedidos, preços, descrições e categorias.
+        </p>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:25px;">
+            <div class="cartao"><h2>{total}</h2><p>Total de produtos</p></div>
+            <div class="cartao"><h2 class="sucesso">{ativos}</h2><p>Produtos ativos</p></div>
+            <div class="cartao"><h2 class="inativo">{inativos}</h2><p>Produtos inativos</p></div>
+            <div class="cartao"><h2>{total_pedidos}</h2><p>Total de pedidos</p></div>
+            <div class="cartao"><h2>{pedidos_abertos}</h2><p>Pedidos em andamento</p></div>
+        </div>
+
+        <div class="acoes">
+            <a href="/admin/novo" class="botao">+ Cadastrar novo produto</a>
+            <a href="/admin/pedidos" class="botao secundario">Gerenciar pedidos</a>
+        </div>
     </div>
 
-    <h2 class="secao">Pedidos recentes</h2>
-    <div class="tabela-responsiva">
-    <table>
-        <tr><th>Número</th><th>Cliente</th><th>Total</th><th>Status</th><th>Detalhes</th></tr>
-        {% for p in pedidos %}
-        <tr>
-            <td>#{{ p['id'] }}</td>
-            <td>{{ p['cliente'] }}</td>
-            <td>{{ dinheiro(p['total']) }}</td>
-            <td>{{ p['status'] }}</td>
-            <td><a class="botao" href="{{ url_for('admin_pedido_detalhe', pid=p['id']) }}">Abrir</a></td>
-        </tr>
-        {% endfor %}
-    </table>
+    <div class="cartao">
+        <h2>Gerenciar catálogo</h2>
+        {lista_html}
     </div>
     """
 
-    return render_site(
-        render_template_string(
-            html,
-            total_produtos=total_produtos,
-            total_pedidos=total_pedidos,
-            total_vendas=total_vendas,
-            pedidos=pedidos,
-            produtos=produtos,
-            dinheiro=dinheiro
-        ),
-        "Painel administrativo"
-    )
+    return layout_admin(conteudo)
 
 
 # =========================================================
 # CADASTRAR PRODUTO
 # =========================================================
 
-@app.route("/admin/produto/novo", methods=["GET", "POST"])
-@admin_required
+@app.route("/admin/novo", methods=["GET", "POST"])
+@administrador_obrigatorio
 def admin_novo():
     if request.method == "POST":
-        validar_csrf()
-
         nome = request.form.get("nome", "").strip()
-        categoria = request.form.get("categoria", "Produtos").strip()
         descricao = request.form.get("descricao", "").strip()
+        categoria = request.form.get("categoria", "").strip()
 
         try:
-            preco = float(request.form.get("preco", "0").replace(",", "."))
-            estoque_texto = request.form.get("estoque", "").strip()
-            estoque = int(estoque_texto) if estoque_texto else None
-        except ValueError:
-            flash("Preço ou estoque inválido.")
-            return redirect(url_for("admin_novo"))
+            preco = converter_preco(request.form.get("preco", "0"))
+        except (ValueError, TypeError):
+            preco = -1
 
-        if not nome or preco < 0 or (estoque is not None and estoque < 0):
-            flash("Confira os dados do produto.")
-            return redirect(url_for("admin_novo"))
+        arquivo = request.files.get("imagem")
+        imagem = None
 
-        imagem = salvar_imagem(request.files.get("imagem"))
+        if not nome:
+            flash("Informe o nome do produto.")
+        elif preco < 0:
+            flash("Informe um preço válido.")
+        else:
+            try:
+                if arquivo and arquivo.filename:
+                    imagem = salvar_imagem(arquivo)
 
-        with conectar() as conn:
-            conn.execute("""
-                INSERT INTO produtos
-                (nome, categoria, descricao, preco, imagem, estoque)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                nome, categoria, descricao, preco, imagem, estoque
-            ))
+                if not imagem:
+                    imagem = imagem_provisoria(categoria, nome)
 
-        flash("Produto cadastrado com sucesso!")
-        return redirect(url_for("admin_dashboard"))
+                with conectar() as db:
+                    db.execute("""
+                        INSERT INTO produtos
+                        (nome, preco, descricao, categoria, ativo, imagem)
+                        VALUES (?, ?, ?, ?, 1, ?)
+                    """, (nome, preco, descricao, categoria, imagem))
 
-    return render_site(formulario_produto(), "Novo produto")
+                flash("Produto cadastrado com sucesso!")
+                return redirect(url_for("admin_painel"))
 
+            except ValueError as erro:
+                flash(str(erro))
 
-def formulario_produto(produto=None):
-    produto = produto or {
-        "nome": "",
-        "categoria": "Produtos",
-        "descricao": "",
-        "preco": 0,
-        "estoque": None
-    }
-
-    html = """
-    <h2 class="secao">{{ titulo_form }}</h2>
-    <form class="formulario" method="post" enctype="multipart/form-data">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-
-        <label>Nome do produto</label>
-        <input name="nome" value="{{ p['nome'] }}" required>
-
-        <label>Categoria</label>
-        <input name="categoria" value="{{ p['categoria'] }}" required>
-
-        <label>Descrição</label>
-        <textarea name="descricao" rows="5">{{ p['descricao'] }}</textarea>
-
-        <label>Preço</label>
-        <input name="preco" type="number" step="0.01" min="0"
-               value="{{ p['preco'] }}" required>
-
-        <label>Estoque (deixe vazio para não controlar)</label>
-        <input name="estoque" type="number" min="0"
-               value="{{ p['estoque'] if p['estoque'] is not none else '' }}">
-
-        <label>Imagem do produto</label>
-        <input name="imagem" type="file" accept=".jpg,.jpeg,.png,.webp">
-
-        <button class="botao">Salvar produto</button>
-        <a class="botao botao-secundario" href="{{ url_for('admin_dashboard') }}">Voltar</a>
-    </form>
+    conteudo = """
+    <div class="cartao">
+        <h1>Cadastrar produto</h1>
+        <p style="color:#9CA3AF;font-size:13px;margin-bottom:15px;">
+            Se não enviar uma foto, o sistema usará uma imagem ilustrativa.
+        </p>
+        <form method="POST" enctype="multipart/form-data">
+            <label>Nome do produto</label>
+            <input type="text" name="nome" placeholder="Ex.: Smartphone" required>
+            <label>Preço (R$)</label>
+            <input type="text" name="preco" placeholder="Ex.: 1999,90" required>
+            <label>Categoria</label>
+            <input type="text" name="categoria" placeholder="Ex.: Eletrônicos">
+            <label>Descrição</label>
+            <textarea name="descricao" rows="4" placeholder="Descreva o produto..."></textarea>
+            <label>Foto do produto</label>
+            <input type="file" name="imagem"
+                   accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp">
+            <p style="color:#9CA3AF;font-size:11px;margin-bottom:15px;">
+                Formatos aceitos: JPG, JPEG, PNG e WEBP. Máximo de 5 MB.
+            </p>
+            <button type="submit">Salvar produto</button>
+            <a href="/admin/painel" class="botao secundario">Cancelar</a>
+        </form>
+    </div>
     """
 
-    return render_template_string(
-        html,
-        p=produto,
-        titulo_form="Cadastrar produto" if produto is None else "Editar produto"
-    )
+    return layout_admin(conteudo, "Novo produto")
 
 
 # =========================================================
 # EDITAR PRODUTO
 # =========================================================
 
-@app.route("/admin/produto/<int:pid>/editar", methods=["GET", "POST"])
-@admin_required
+@app.route("/admin/editar/<int:pid>", methods=["GET", "POST"])
+@administrador_obrigatorio
 def admin_editar(pid):
-    with conectar() as conn:
-        produto = conn.execute(
-            "SELECT * FROM produtos WHERE id=?",
-            (pid,)
-        ).fetchone()
+    produto = buscar_produto(pid)
 
     if not produto:
-        abort(404)
+        flash("Produto não encontrado.")
+        return redirect(url_for("admin_painel"))
 
     if request.method == "POST":
-        validar_csrf()
-
         nome = request.form.get("nome", "").strip()
-        categoria = request.form.get("categoria", "Produtos").strip()
         descricao = request.form.get("descricao", "").strip()
+        categoria = request.form.get("categoria", "").strip()
 
         try:
-            preco = float(request.form.get("preco", "0").replace(",", "."))
-            estoque_texto = request.form.get("estoque", "").strip()
-            estoque = int(estoque_texto) if estoque_texto else None
-        except ValueError:
-            flash("Preço ou estoque inválido.")
-            return redirect(url_for("admin_editar", pid=pid))
+            preco = converter_preco(request.form.get("preco", "0"))
+        except (ValueError, TypeError):
+            preco = -1
 
-        if not nome or preco < 0 or (estoque is not None and estoque < 0):
-            flash("Confira os dados do produto.")
-            return redirect(url_for("admin_editar", pid=pid))
+        arquivo = request.files.get("imagem")
+        remover_foto = request.form.get("remover_foto") == "sim"
 
-        nova_imagem = salvar_imagem(request.files.get("imagem"))
-        imagem = nova_imagem or produto["imagem"]
+        if not nome:
+            flash("O nome do produto é obrigatório.")
+        elif preco < 0:
+            flash("Informe um preço válido.")
+        else:
+            imagem_atual = produto["imagem"]
 
-        with conectar() as conn:
-            conn.execute("""
-                UPDATE produtos
-                SET nome=?, categoria=?, descricao=?, preco=?,
-                    imagem=?, estoque=?
-                WHERE id=?
-            """, (
-                nome, categoria, descricao, preco,
-                imagem, estoque, pid
-            ))
+            try:
+                if arquivo and arquivo.filename:
+                    nova_imagem = salvar_imagem(arquivo)
+                    if imagem_atual != nova_imagem:
+                        excluir_imagem_local(imagem_atual)
+                    imagem_atual = nova_imagem
+                elif remover_foto:
+                    excluir_imagem_local(imagem_atual)
+                    imagem_atual = imagem_provisoria(categoria, nome)
 
-        if nova_imagem:
-            excluir_imagem(produto["imagem"])
+                with conectar() as db:
+                    db.execute("""
+                        UPDATE produtos
+                        SET nome = ?, preco = ?, descricao = ?,
+                            categoria = ?, imagem = ?
+                        WHERE id = ?
+                    """, (
+                        nome, preco, descricao,
+                        categoria, imagem_atual, pid
+                    ))
 
-        flash("Produto atualizado!")
-        return redirect(url_for("admin_dashboard"))
+                flash("Produto e foto atualizados com sucesso!")
+                return redirect(url_for("admin_painel"))
 
-    html = formulario_produto(produto)
-    return render_site(html, "Editar produto")
+            except ValueError as erro:
+                flash(str(erro))
+
+    imagem_atual = produto["imagem"] or imagem_provisoria(
+        produto["categoria"], produto["nome"]
+    )
+
+    if imagem_atual.startswith("http://") or imagem_atual.startswith("https://"):
+        imagem_url = imagem_atual
+    else:
+        imagem_url = url_for("servir_arquivos", filename=imagem_atual)
+
+    conteudo = f"""
+    <div class="cartao">
+        <h1>Editar produto</h1>
+        <div style="margin:15px 0;">
+            <label>Foto atual</label><br><br>
+            <img src="{escape(imagem_url)}" alt="Foto atual"
+                 style="width:100%;max-width:300px;height:200px;object-fit:cover;border-radius:10px;border:1px solid {COR_BORDA};">
+        </div>
+        <form method="POST" enctype="multipart/form-data">
+            <label>Nome do produto</label>
+            <input type="text" name="nome" value="{escape(produto['nome'])}" required>
+            <label>Preço (R$)</label>
+            <input type="text" name="preco" value="{formatar_preco(produto['preco'])}" required>
+            <label>Categoria</label>
+            <input type="text" name="categoria" value="{escape(produto['categoria'] or '')}">
+            <label>Descrição</label>
+            <textarea name="descricao" rows="4">{escape(produto['descricao'] or '')}</textarea>
+            <label>Substituir foto</label>
+            <input type="file" name="imagem" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp">
+            <p style="color:#9CA3AF;font-size:11px;margin-bottom:15px;">
+                JPG, JPEG, PNG ou WEBP. Máximo de 5 MB.
+            </p>
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:20px;">
+                <input type="checkbox" name="remover_foto" value="sim" style="width:auto;margin:0;">
+                Voltar para a imagem ilustrativa
+            </label>
+            <button type="submit">Salvar alterações</button>
+            <a href="/admin/painel" class="botao secundario">Voltar</a>
+        </form>
+    </div>
+    """
+
+    return layout_admin(conteudo, "Editar produto")
+
+
+# =========================================================
+# ATIVAR / DESATIVAR PRODUTO
+# =========================================================
+
+@app.route("/admin/alternar/<int:pid>", methods=["POST"])
+@administrador_obrigatorio
+def admin_alternar(pid):
+    with conectar() as db:
+        produto = db.execute(
+            "SELECT ativo FROM produtos WHERE id = ?", (pid,)
+        ).fetchone()
+
+        if produto:
+            novo_status = 0 if produto["ativo"] else 1
+            db.execute(
+                "UPDATE produtos SET ativo = ? WHERE id = ?",
+                (novo_status, pid)
+            )
+            flash("Disponibilidade do produto atualizada.")
+
+    return redirect(url_for("admin_painel"))
 
 
 # =========================================================
 # EXCLUIR PRODUTO
 # =========================================================
 
-@app.route("/admin/produto/<int:pid>/excluir", methods=["POST"])
-@admin_required
+@app.route("/admin/excluir/<int:pid>", methods=["POST"])
+@administrador_obrigatorio
 def admin_excluir(pid):
-    validar_csrf()
-
-    with conectar() as conn:
-        produto = conn.execute(
-            "SELECT * FROM produtos WHERE id=?",
-            (pid,)
-        ).fetchone()
-
-        if produto:
-            conn.execute(
-                "DELETE FROM produtos WHERE id=?",
-                (pid,)
-            )
+    produto = buscar_produto(pid)
 
     if produto:
-        excluir_imagem(produto["imagem"])
-        flash("Produto excluído.")
-    else:
-        flash("Produto não encontrado.")
+        excluir_imagem_local(produto["imagem"])
 
-    return redirect(url_for("admin_dashboard"))
+        with conectar() as db:
+            db.execute("DELETE FROM produtos WHERE id = ?", (pid,))
 
+        flash("Produto excluído do catálogo.")
 
-# =========================================================
-# PEDIDOS ADMINISTRATIVOS
-# =========================================================
-
-@app.route("/admin/pedidos")
-@admin_required
-def admin_pedidos():
-    with conectar() as conn:
-        pedidos = conn.execute("""
-            SELECT * FROM pedidos ORDER BY id DESC
-        """).fetchall()
-
-    html = """
-    <h2 class="secao">Pedidos recebidos</h2>
-    <div class="tabela-responsiva">
-    <table>
-        <tr>
-            <th>Pedido</th><th>Cliente</th><th>Telefone</th>
-            <th>Total</th><th>Status</th><th>Detalhes</th>
-        </tr>
-        {% for p in pedidos %}
-        <tr>
-            <td>#{{ p['id'] }}</td>
-            <td>{{ p['cliente'] }}</td>
-            <td>{{ p['telefone'] }}</td>
-            <td>{{ dinheiro(p['total']) }}</td>
-            <td>{{ p['status'] }}</td>
-            <td><a class="botao" href="{{ url_for('admin_pedido_detalhe', pid=p['id']) }}">Abrir</a></td>
-        </tr>
-        {% endfor %}
-    </table>
-    </div>
-    <a class="botao botao-secundario" href="{{ url_for('admin_dashboard') }}">Voltar</a>
-    """
-
-    return render_site(
-        render_template_string(
-            html, pedidos=pedidos, dinheiro=dinheiro
-        ),
-        "Pedidos"
-    )
-
-
-@app.route("/admin/pedido/<int:pid>")
-@admin_required
-def admin_pedido_detalhe(pid):
-    with conectar() as conn:
-        pedido = conn.execute(
-            "SELECT * FROM pedidos WHERE id=?",
-            (pid,)
-        ).fetchone()
-
-        if not pedido:
-            abort(404)
-
-        itens = conn.execute("""
-            SELECT * FROM pedido_itens
-            WHERE pedido_id=? ORDER BY id
-        """, (pid,)).fetchall()
-
-    html = """
-    <h2 class="secao">Pedido #{{ pedido['id'] }}</h2>
-
-    <div class="aviso">
-        <strong>Cliente:</strong> {{ pedido['cliente'] }}<br>
-        <strong>Telefone:</strong> {{ pedido['telefone'] }}<br>
-        <strong>Endereço:</strong> {{ endereco_pedido(pedido) }}<br>
-        <strong>Data:</strong> {{ pedido['data_criacao'] }}<br>
-        <strong>Status:</strong> {{ pedido['status'] }}<br>
-        <strong>Observações:</strong> {{ pedido['observacoes'] or 'Nenhuma' }}
-    </div>
-
-    <h3 class="secao">Produtos do pedido</h3>
-    <div class="tabela-responsiva">
-    <table>
-        <tr><th>Produto</th><th>Quantidade</th><th>Unitário</th><th>Subtotal</th></tr>
-        {% for item in itens %}
-        <tr>
-            <td>{{ item['nome_produto'] }}</td>
-            <td>{{ item['quantidade'] }}</td>
-            <td>{{ dinheiro(item['preco_unitario']) }}</td>
-            <td>{{ dinheiro(item['subtotal']) }}</td>
-        </tr>
-        {% endfor %}
-    </table>
-    </div>
-
-    <h2 class="preco">Total: {{ dinheiro(pedido['total']) }}</h2>
-
-    <form class="formulario" method="post"
-          action="{{ url_for('admin_atualizar_status', pid=pedido['id']) }}">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <label>Atualizar status</label>
-        <select name="status">
-            {% for s in status_opcoes %}
-            <option value="{{ s }}" {{ 'selected' if pedido['status'] == s else '' }}>
-                {{ s }}
-            </option>
-            {% endfor %}
-        </select>
-        <button class="botao">Salvar status</button>
-    </form>
-
-    <form class="formulario" method="post"
-          action="{{ url_for('admin_rastreamento', pid=pedido['id']) }}">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <h3 class="secao">Código de rastreamento</h3>
-        <label>Informe o código de rastreio</label>
-        <input name="codigo_rastreamento"
-               value="{{ pedido['codigo_rastreamento'] or '' }}"
-               placeholder="Código de rastreamento">
-        <button class="botao">Salvar e preparar WhatsApp do cliente</button>
-    </form>
-
-    {% if pedido['codigo_rastreamento'] %}
-    <div class="aviso">
-        Código registrado: <strong>{{ pedido['codigo_rastreamento'] }}</strong>
-    </div>
-    {% endif %}
-
-    <a class="botao botao-secundario" href="{{ url_for('admin_pedidos') }}">Voltar aos pedidos</a>
-    """
-
-    status_opcoes = [
-        "Aguardando confirmação no WhatsApp",
-        "Em atendimento",
-        "Aguardando pagamento",
-        "Pago",
-        "Enviado",
-        "Concluído",
-        "Cancelado"
-    ]
-
-    return render_site(
-        render_template_string(
-            html,
-            pedido=pedido,
-            itens=itens,
-            dinheiro=dinheiro,
-            endereco_pedido=endereco_pedido,
-            status_opcoes=status_opcoes
-        ),
-        f"Pedido {pid}"
-    )
+    return redirect(url_for("admin_painel"))
 
 
 # =========================================================
-# ATUALIZAR STATUS
-# =========================================================
-
-@app.route("/admin/pedido/<int:pid>/status", methods=["POST"])
-@admin_required
-def admin_atualizar_status(pid):
-    validar_csrf()
-
-    status = request.form.get("status", "")
-
-    permitidos = [
-        "Aguardando confirmação no WhatsApp",
-        "Em atendimento",
-        "Aguardando pagamento",
-        "Pago",
-        "Enviado",
-        "Concluído",
-        "Cancelado"
-    ]
-
-    if status not in permitidos:
-        abort(400)
-
-    with conectar() as conn:
-        conn.execute(
-            "UPDATE pedidos SET status=? WHERE id=?",
-            (status, pid)
-        )
-
-    flash("Status do pedido atualizado.")
-    return redirect(url_for("admin_pedido_detalhe", pid=pid))
-
-
-# =========================================================
-# RASTREAMENTO E WHATSAPP DO CLIENTE
-# =========================================================
-
-@app.route("/admin/pedido/<int:pid>/rastreamento", methods=["POST"])
-@admin_required
-def admin_rastreamento(pid):
-    validar_csrf()
-
-    codigo = request.form.get("codigo_rastreamento", "").strip()
-
-    if not codigo:
-        flash("Informe o código de rastreamento.")
-        return redirect(url_for("admin_pedido_detalhe", pid=pid))
-
-    with conectar() as conn:
-        pedido = conn.execute(
-            "SELECT * FROM pedidos WHERE id=?",
-            (pid,)
-        ).fetchone()
-
-        if not pedido:
-            abort(404)
-
-        conn.execute("""
-            UPDATE pedidos
-            SET codigo_rastreamento=?, status='Enviado'
-            WHERE id=?
-        """, (codigo, pid))
-
-    telefone = re.sub(r"\D", "", pedido["telefone"] or "")
-
-    if not 10 <= len(telefone) <= 13:
-        flash("Código salvo, mas o telefone do cliente não é válido para WhatsApp.")
-        return redirect(url_for("admin_pedido_detalhe", pid=pid))
-
-    mensagem = (
-        f"Olá, {pedido['cliente']}! Tudo bem?\n\n"
-        f"Seu pedido #{pedido['id']} da IWG Technological Solutions "
-        f"foi postado para o endereço informado.\n\n"
-        f"*Código de rastreamento:* {codigo}\n\n"
-        f"*Destino:* {endereco_pedido(pedido)}\n\n"
-        "Guarde este código para acompanhar a entrega junto à transportadora.\n\n"
-        "Agradecemos pela sua compra!\n"
-        "IWG Technological Solutions"
-    )
-
-    url = f"https://wa.me/{telefone}?text={quote(mensagem, safe='')}"
-    return redirect(url)
-
-
-# =========================================================
-# ALTERAR SENHA ADMINISTRATIVA
+# ALTERAR SENHA
 # =========================================================
 
 @app.route("/admin/senha", methods=["GET", "POST"])
-@admin_required
+@administrador_obrigatorio
 def admin_senha():
     if request.method == "POST":
-        validar_csrf()
+        senha_atual = request.form.get("senha_atual", "")
+        senha_nova = request.form.get("senha_nova", "")
+        confirmar = request.form.get("confirmar", "")
+        usuario = session.get("admin_usuario")
 
-        atual = request.form.get("senha_atual", "")
-        nova = request.form.get("nova_senha", "")
-        confirmar = request.form.get("confirmar_senha", "")
+        with conectar() as db:
+            admin = db.execute("""
+                SELECT * FROM administradores WHERE usuario = ?
+            """, (usuario,)).fetchone()
 
-        with conectar() as conn:
-            admin = conn.execute(
-                "SELECT * FROM administradores WHERE id=?",
-                (session["admin"],)
-            ).fetchone()
-
-            if not admin or not check_password_hash(admin["senha"], atual):
-                flash("Senha atual incorreta.")
-                return redirect(url_for("admin_senha"))
-
-            if len(nova) < 4:
-                flash("A nova senha precisa ter pelo menos 4 caracteres.")
-                return redirect(url_for("admin_senha"))
-
-            if nova != confirmar:
+            if not admin or not check_password_hash(
+                admin["senha_hash"], senha_atual
+            ):
+                flash("A senha atual está incorreta.")
+            elif len(senha_nova) < 8:
+                flash("A nova senha precisa ter pelo menos 8 caracteres.")
+            elif senha_nova != confirmar:
                 flash("A confirmação da senha não corresponde.")
-                return redirect(url_for("admin_senha"))
+            else:
+                nova_hash = generate_password_hash(
+                    senha_nova, method="pbkdf2:sha256"
+                )
+                db.execute("""
+                    UPDATE administradores
+                    SET senha_hash = ? WHERE usuario = ?
+                """, (nova_hash, usuario))
 
-            conn.execute("""
-                UPDATE administradores SET senha=? WHERE id=?
-            """, (generate_password_hash(nova), session["admin"]))
+                flash("Senha alterada com sucesso!")
+                return redirect(url_for("admin_painel"))
 
-        flash("Senha alterada com sucesso!")
-        return redirect(url_for("admin_dashboard"))
-
-    html = """
-    <h2 class="secao">Alterar senha</h2>
-    <form class="formulario" method="post">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <label>Senha atual</label>
-        <input type="password" name="senha_atual" required>
-        <label>Nova senha</label>
-        <input type="password" name="nova_senha" required>
-        <label>Confirmar nova senha</label>
-        <input type="password" name="confirmar_senha" required>
-        <button class="botao">Alterar senha</button>
-    </form>
+    conteudo = """
+    <div class="cartao">
+        <h1>Alterar senha</h1>
+        <form method="POST">
+            <label>Senha atual</label>
+            <input type="password" name="senha_atual" required>
+            <label>Nova senha</label>
+            <input type="password" name="senha_nova" minlength="8" required>
+            <label>Confirmar nova senha</label>
+            <input type="password" name="confirmar" minlength="8" required>
+            <button type="submit">Atualizar senha</button>
+            <a href="/admin/painel" class="botao secundario">Voltar</a>
+        </form>
+    </div>
     """
 
-    return render_site(html, "Alterar senha")
+    return layout_admin(conteudo, "Alterar senha")
 
 
 # =========================================================
-# SAIR DO PAINEL
+# CARRINHO
 # =========================================================
 
-@app.route("/admin/sair")
-def admin_logout():
-    session.clear()
-    flash("Você saiu do painel administrativo.")
-    return redirect(url_for("inicio"))
+@app.route("/adicionar/<int:pid>", methods=["POST"])
+def adicionar(pid):
+    produto = buscar_produto(pid)
+
+    if not produto or not produto["ativo"]:
+        flash("Este produto não está disponível.")
+        return redirect(url_for("home"))
+
+    carrinho = session.get("carrinho", {})
+    str_pid = str(pid)
+    carrinho[str_pid] = int(carrinho.get(str_pid, 0)) + 1
+    session["carrinho"] = carrinho
+
+    return redirect(url_for("carrinho"))
 
 
-# =========================================================
-# PAGINAS DE ERRO
-# =========================================================
+def calcular_carrinho():
+    carrinho_sessao = session.get("carrinho", {})
+    itens = []
+    total = 0.0
 
-@app.errorhandler(404)
-def pagina_nao_encontrada(error):
-    html = """
-    <h2 class="secao">Página não encontrada</h2>
-    <p>O conteúdo solicitado não foi encontrado.</p>
-    <a class="botao" href="{{ url_for('inicio') }}">Voltar ao início</a>
+    for str_pid, qtd in carrinho_sessao.items():
+        try:
+            pid = int(str_pid)
+            qtd = int(qtd)
+        except (ValueError, TypeError):
+            continue
+
+        if qtd <= 0:
+            continue
+
+        produto = buscar_produto(pid)
+
+        if not produto or not produto["ativo"]:
+            continue
+
+        subtotal = float(produto["preco"]) * qtd
+        total += subtotal
+
+        itens.append({
+            "id": pid,
+            "nome": produto["nome"],
+            "quantidade": qtd,
+            "preco": float(produto["preco"]),
+            "subtotal": subtotal
+        })
+
+    return itens, total
+
+
+@app.route("/carrinho")
+def carrinho():
+    itens, total = calcular_carrinho()
+
+    if not itens:
+        conteudo = f"""
+        <div style="text-align:center;padding:40px;color:#9CA3AF;">
+            O seu carrinho está vazio.
+            <br><br>
+            <a href="/" style="color:{COR_OURO};font-weight:bold;text-decoration:none;">
+                ← Voltar para a Página Principal
+            </a>
+        </div>
+        """
+    else:
+        linhas = ""
+
+        for item in itens:
+            linhas += f"""
+            <div style="padding:14px 20px;border-bottom:1px solid {COR_BORDA};
+                        display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <div>
+                    <strong>{escape(item['nome'])}</strong>
+                    <p style="color:#9CA3AF;font-size:11px;margin-top:5px;">
+                        Quantidade: {item['quantidade']}
+                        | Unitário: R$ {formatar_preco(item['preco'])}
+                        | Subtotal: R$ {formatar_preco(item['subtotal'])}
+                    </p>
+                </div>
+                <form method="POST" action="/remover/{item['id']}">
+                    <button type="submit" style="background:#B91C1C;color:white;">
+                        Remover
+                    </button>
+                </form>
+            </div>
+            """
+
+        conteudo = f"""
+        <h3 style="color:{COR_OURO};margin:20px 0 15px;font-size:13px;">
+            SEUS ITENS SELECIONADOS
+        </h3>
+        <div style="background:{COR_CARD};border:1px solid {COR_BORDA};border-radius:12px;overflow:hidden;">
+            {linhas}
+        </div>
+        <div style="background:{COR_CARD};border:1px solid {COR_BORDA};
+                    border-radius:12px;padding:20px;text-align:right;margin-top:20px;">
+            <h3 style="color:white;margin-bottom:15px;">
+                Total Geral: R$ {formatar_preco(total)}
+            </h3>
+            <a href="/checkout" style="background:#25D366;color:white;text-decoration:none;
+                display:block;text-align:center;padding:13px;border-radius:8px;font-weight:bold;">
+                CONTINUAR PARA IDENTIFICAÇÃO E ENTREGA
+            </a>
+        </div>
+        <div style="margin-top:15px;text-align:center;">
+            <a href="/" style="color:{COR_OURO};text-decoration:none;font-size:13px;font-weight:bold;">
+                ← Continuar Comprando
+            </a>
+        </div>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Carrinho - IWG Technological Solutions</title>
+        <style>
+            * {{ margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif; }}
+            body {{ background:{AZUL_FUNDO};color:white;padding-bottom:30px; }}
+            .container {{ max-width:900px;margin:30px auto;padding:0 15px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            {conteudo}
+            {gerar_rodape()}
+        </div>
+    </body>
+    </html>
     """
-    return render_site(html, "Página não encontrada"), 404
+
+    return render_template_string(html)
 
 
-@app.errorhandler(400)
-def requisicao_invalida(error):
-    html = """
-    <h2 class="secao">Requisição inválida</h2>
-    <p>Não foi possível processar esta solicitação.</p>
-    <a class="botao" href="{{ url_for('inicio') }}">Voltar ao início</a>
+@app.route("/remover/<int:pid>", methods=["POST"])
+def remover(pid):
+    carrinho_sessao = session.get("carrinho", {})
+
+    if str(pid) in carrinho_sessao:
+        del carrinho_sessao[str(pid)]
+        session["carrinho"] = carrinho_sessao
+
+    return redirect(url_for("carrinho"))
+
+
+# =========================================================
+# CHECKOUT - DADOS DO CLIENTE E ENDERECO
+# =========================================================
+
+@app.route("/checkout", methods=["GET", "POST"])
+def checkout():
+    itens, total = calcular_carrinho()
+
+    if not itens:
+        flash("Seu carrinho está vazio.")
+        return redirect(url_for("carrinho"))
+
+    if request.method == "POST":
+        nome = request.form.get("nome", "").strip()
+        telefone = request.form.get("telefone", "").strip()
+        cpf = request.form.get("cpf", "").strip()
+        cep = request.form.get("cep", "").strip()
+        rua = request.form.get("rua", "").strip()
+        numero = request.form.get("numero", "").strip()
+        complemento = request.form.get("complemento", "").strip()
+        bairro = request.form.get("bairro", "").strip()
+        cidade = request.form.get("cidade", "").strip()
+        estado = request.form.get("estado", "").strip()
+        observacoes = request.form.get("observacoes", "").strip()
+
+        obrigatorios = [
+            nome, telefone, cpf, cep, rua,
+            numero, bairro, cidade, estado
+        ]
+
+        if not all(obrigatorios):
+            flash("Preencha todos os campos obrigatórios.")
+        else:
+            itens_texto = []
+
+            for item in itens:
+                itens_texto.append(
+                    f"{item['quantidade']}x {item['nome']} | "
+                    f"Unitário: R$ {formatar_preco(item['preco'])} | "
+                    f"Subtotal: R$ {formatar_preco(item['subtotal'])}"
+                )
+
+            resumo_itens = "\n".join(itens_texto)
+
+            # CPF nao e armazenado no banco.
+            with conectar() as db:
+                cursor = db.execute("""
+                    INSERT INTO pedidos (
+                        nome, telefone, cep, rua, numero,
+                        complemento, bairro, cidade, estado,
+                        observacoes, itens, total, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    nome, telefone, cep, rua, numero,
+                    complemento, bairro, cidade, estado,
+                    observacoes, resumo_itens, total,
+                    "Aguardando confirmação no WhatsApp"
+                ))
+
+                pedido_id = cursor.lastrowid
+
+            mensagem = (
+                f"Olá! Gostaria de confirmar meu pedido na IWG.\n\n"
+                f"PEDIDO Nº {pedido_id}\n\n"
+                f"CLIENTE: {nome}\n"
+                f"TELEFONE: {telefone}\n"
+                f"CPF: {cpf}\n\n"
+                f"ENDEREÇO DE ENTREGA:\n"
+                f"CEP: {cep}\n"
+                f"Rua: {rua}, nº {numero}\n"
+                f"Complemento: {complemento or 'Não informado'}\n"
+                f"Bairro: {bairro}\n"
+                f"Cidade: {cidade} - {estado}\n\n"
+                f"PRODUTOS:\n{resumo_itens}\n\n"
+                f"TOTAL DOS PRODUTOS: R$ {formatar_preco(total)}\n\n"
+                f"OBSERVAÇÕES: {observacoes or 'Nenhuma'}\n\n"
+                "ATENÇÃO: frete e tributos podem gerar custos adicionais, "
+                "especialmente em envios interestaduais. Favor confirmar "
+                "esses valores antes de finalizar a compra.\n\n"
+                "Após a postagem para o destino/endereço escolhido, "
+                "a IWG fornecerá o código de rastreamento.\n\n"
+                f"Solicito a confirmação do pedido nº {pedido_id}."
+            )
+
+            whatsapp_url = (
+                f"https://wa.me/{WHATSAPP}?text={quote(mensagem)}"
+            )
+
+            session["carrinho"] = {}
+
+            pagina = f"""
+            <!DOCTYPE html>
+            <html lang="pt-BR">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Pedido registrado - IWG</title>
+                <style>
+                    * {{ box-sizing:border-box;font-family:Arial,sans-serif; }}
+                    body {{ background:{AZUL_FUNDO};color:white;padding:20px; }}
+                    .cartao {{
+                        max-width:650px;margin:50px auto;background:{COR_CARD};
+                        border:1px solid {COR_OURO};border-radius:14px;
+                        padding:28px;text-align:center;
+                    }}
+                    h1 {{ color:{COR_OURO}; }}
+                    p {{ color:#D1D5DB;line-height:1.7;margin:15px 0; }}
+                    a {{
+                        display:block;background:#25D366;color:white;
+                        text-decoration:none;padding:15px;border-radius:8px;
+                        font-weight:bold;margin-top:20px;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="cartao">
+                    <h1>Pedido registrado!</h1>
+                    <h2>Pedido nº {pedido_id}</h2>
+                    <p>
+                        Seus dados e produtos foram registrados.
+                        Para solicitar a confirmação, clique no botão abaixo
+                        e envie a mensagem pelo WhatsApp da IWG.
+                    </p>
+                    <p>
+                        <strong>Importante:</strong> o pedido ainda depende
+                        da confirmação pelo WhatsApp.
+                    </p>
+                    <a href="{whatsapp_url}" target="_blank" rel="noopener">
+                        ENVIAR PEDIDO PELO WHATSAPP
+                    </a>
+                    <p>
+                        Depois de enviar a mensagem, aguarde o atendimento
+                        da equipe IWG.
+                    </p>
+                    <a href="/" style="background:{COR_BORDA};">
+                        VOLTAR AO SITE
+                    </a>
+                </div>
+            </body>
+            </html>
+            """
+
+            return render_template_string(pagina)
+
+    linhas_itens = ""
+
+    for item in itens:
+        linhas_itens += f"""
+        <li>
+            {escape(item['nome'])} — {item['quantidade']} unidade(s)
+            — R$ {formatar_preco(item['subtotal'])}
+        </li>
+        """
+
+    conteudo = f"""
+    <div class="cartao">
+        <h1>Finalizar pedido</h1>
+        <p style="color:#9CA3AF;">
+            Informe seus dados para preparar seu pedido e a entrega.
+        </p>
+
+        <h3>Resumo do pedido</h3>
+        <ul style="padding-left:20px;line-height:1.9;margin:15px 0;">
+            {linhas_itens}
+        </ul>
+        <h2 style="color:{COR_OURO};">
+            Total: R$ {formatar_preco(total)}
+        </h2>
+
+        <form method="POST">
+            <h3 style="margin-top:25px;">Dados do cliente</h3>
+
+            <label>Nome completo *</label>
+            <input type="text" name="nome" required>
+
+            <label>Telefone / WhatsApp *</label>
+            <input type="tel" name="telefone" required
+                   placeholder="Ex.: (27) 99999-9999">
+
+            <label>CPF *</label>
+            <input type="text" name="cpf" required
+                   placeholder="Seu CPF será enviado pelo WhatsApp">
+
+            <h3>Endereço de entrega</h3>
+
+            <label>CEP *</label>
+            <input type="text" name="cep" required>
+
+            <label>Rua / Avenida *</label>
+            <input type="text" name="rua" required>
+
+            <label>Número *</label>
+            <input type="text" name="numero" required>
+
+            <label>Complemento</label>
+            <input type="text" name="complemento">
+
+            <label>Bairro *</label>
+            <input type="text" name="bairro" required>
+
+            <label>Cidade *</label>
+            <input type="text" name="cidade" required>
+
+            <label>Estado (UF) *</label>
+            <input type="text" name="estado" maxlength="2" required
+                   placeholder="Ex.: ES">
+
+            <label>Observações</label>
+            <textarea name="observacoes" rows="4"
+                      placeholder="Informações adicionais sobre a entrega..."></textarea>
+
+            <p style="color:#F7C04A;font-size:12px;line-height:1.6;">
+                O frete e eventuais tributos serão confirmados antes
+                da finalização da compra. O CPF será enviado pelo WhatsApp
+                e não será salvo no banco de dados da loja.
+            </p>
+
+            <button type="submit" style="width:100%;margin-top:15px;">
+                REGISTRAR PEDIDO E CONTINUAR NO WHATSAPP
+            </button>
+        </form>
+
+        <p style="margin-top:20px;">
+            <a href="/carrinho" style="color:{COR_OURO};">
+                Voltar ao carrinho
+            </a>
+        </p>
+    </div>
     """
-    return render_site(html, "Requisição inválida"), 400
 
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Checkout - IWG</title>
+        <style>
+            * {{ box-sizing:border-box;font-family:Arial,sans-serif; }}
+            body {{ margin:0;padding:20px;background:{AZUL_FUNDO};color:white; }}
+            .container {{ max-width:750px;margin:25px auto; }}
+            .cartao {{
+                background:{COR_CARD};border:1px solid {COR_BORDA};
+                border-radius:12px;padding:22px;margin-bottom:20px;
+            }}
+            h1,h2,h3 {{ color:{COR_OURO};margin-bottom:12px; }}
+            label {{ display:block;color:#D1D5DB;font-size:13px;margin-top:12px; }}
+            input,textarea {{
+                width:100%;padding:12px;margin-top:6px;
+                border-radius:7px;border:1px solid {COR_BORDA};
+                background:{AZUL_FUNDO};color:white;font-size:14px;
+            }}
+            button {{
+                border:0;border-radius:7px;padding:14px;
+                background:{COR_OURO};color:{AZUL_FUNDO};
+                font-weight:bold;cursor:pointer;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            {conteudo}
+            {gerar_rodape()}
+        </div>
+    </body>
+    </html>
+    """
+
+    return render_template_string(html)
+
+
+# =========================================================
+# ADMINISTRACAO DE PEDIDOS
+# =========================================================
+
+@app.route("/admin/pedidos")
+@administrador_obrigatorio
+def admin_pedidos():
+    with conectar() as db:
+        pedidos = db.execute("""
+            SELECT * FROM pedidos
+            ORDER BY id DESC
+        """).fetchall()
+
+    linhas = ""
+
+    for pedido in pedidos:
+        linhas += f"""
+        <div class="produto">
+            <h3>Pedido nº {pedido['id']}</h3>
+            <p><strong>Cliente:</strong> {escape(pedido['nome'])}</p>
+            <p><strong>Telefone:</strong> {escape(pedido['telefone'])}</p>
+            <p><strong>Total:</strong> R$ {formatar_preco(pedido['total'])}</p>
+            <p><strong>Status:</strong> {escape(pedido['status'])}</p>
+            <p><strong>Data:</strong> {escape(pedido['data_criacao'] or '')}</p>
+            <div class="acoes">
+                <a class="botao" href="/admin/pedido/{pedido['id']}">
+                    Ver pedido e atualizar
+                </a>
+            </div>
+        </div>
+        """
+
+    if not linhas:
+        linhas = "<p>Nenhum pedido registrado até o momento.</p>"
+
+    conteudo = f"""
+    <div class="cartao">
+        <h1>Pedidos recebidos</h1>
+        <p style="color:#9CA3AF;">
+            Consulte os dados dos clientes, acompanhe os pedidos
+            e informe os códigos de rastreamento.
+        </p>
+        {linhas}
+    </div>
+    """
+
+    return layout_admin(conteudo, "Pedidos")
+
+
+@app.route("/admin/pedido/<int:pid>", methods=["GET", "POST"])
+@administrador_obrigatorio
+def admin_pedido_detalhe(pid):
+    pedido = buscar_pedido(pid)
+
+    if not pedido:
+        flash("Pedido não encontrado.")
+        return redirect(url_for("admin_pedidos"))
+
+    if request.method == "POST":
+        status = request.form.get("status", "").strip()
+        codigo = request.form.get("codigo_rastreio", "").strip()
+
+        if status not in STATUS_PEDIDOS:
+            flash("Status inválido.")
+        else:
+            with conectar() as db:
+                db.execute("""
+                    UPDATE pedidos
+                    SET status = ?, codigo_rastreio = ?
+                    WHERE id = ?
+                """, (status, codigo, pid))
+
+            flash("Pedido atualizado com sucesso!")
+            return redirect(url_for("admin_pedido_detalhe", pid=pid))
+
+    pedido = buscar_pedido(pid)
+
+    endereco = (
+        f"{pedido['rua']}, nº {pedido['numero']}, "
+        f"{pedido['bairro']}, {pedido['cidade']} - "
+        f"{pedido['estado']}, CEP {pedido['cep']}"
+    )
+
+    opcoes_status = ""
+
+    for status in STATUS_PEDIDOS:
+        selecionado = "selected" if status == pedido["status"] else ""
+        opcoes_status += (
+            f'<option value="{escape(status)}" {selecionado}>'
+            f'{escape(status)}</option>'
+        )
+
+    mensagem_rastreio = (
+        f"Olá, {pedido['nome']}! "
+        f"Seu pedido nº {pid} da IWG foi atualizado.\n\n"
+        f"Status: {pedido['status']}\n"
+        f"Código de rastreamento: "
+        f"{pedido['codigo_rastreio'] or 'Ainda não informado'}\n\n"
+        "Agradecemos pela preferência!\n"
+        "IWG Technological Solutions"
+    )
+
+    whatsapp_cliente = "".join(
+        caractere for caractere in pedido["telefone"]
+        if caractere.isdigit()
+    )
+
+    if len(whatsapp_cliente) in (10, 11):
+        whatsapp_cliente = "55" + whatsapp_cliente
+
+    if len(whatsapp_cliente) < 12:
+        link_whatsapp = ""
+    else:
+        link_whatsapp = (
+            f"https://wa.me/{whatsapp_cliente}"
+            f"?text={quote(mensagem_rastreio)}"
+        )
+
+    botao_whatsapp = ""
+
+    if link_whatsapp:
+        botao_whatsapp = f"""
+        <a class="botao" href="{link_whatsapp}"
+           target="_blank" rel="noopener">
+            Enviar atualização ao cliente pelo WhatsApp
+        </a>
+        """
+    else:
+        botao_whatsapp = """
+        <p class="inativo">
+            O telefone cadastrado não parece estar completo.
+            Confira o número antes de enviar a mensagem.
+        </p>
+        """
+
+    conteudo = f"""
+    <div class="cartao">
+        <h1>Pedido nº {pid}</h1>
+
+        <h3>Dados do cliente</h3>
+        <p><strong>Nome:</strong> {escape(pedido['nome'])}</p>
+        <p><strong>Telefone:</strong> {escape(pedido['telefone'])}</p>
+
+        <h3 style="margin-top:20px;">Endereço de entrega</h3>
+        <p>{escape(endereco)}</p>
+        <p><strong>Complemento:</strong> {escape(pedido['complemento'] or 'Não informado')}</p>
+
+        <h3 style="margin-top:20px;">Produtos do pedido</h3>
+        <pre style="white-space:pre-wrap;color:#D1D5DB;font-family:Arial;">
+{escape(pedido['itens'])}
+        </pre>
+
+        <h2>Total: R$ {formatar_preco(pedido['total'])}</h2>
+
+        <p><strong>Observações:</strong>
+            {escape(pedido['observacoes'] or 'Nenhuma')}
+        </p>
+
+        <p><strong>Data:</strong> {escape(pedido['data_criacao'] or '')}</p>
+    </div>
+
+    <div class="cartao">
+        <h2>Atualizar pedido</h2>
+
+        <form method="POST">
+            <label>Status do pedido</label>
+            <select name="status" required>
+                {opcoes_status}
+            </select>
+
+            <label>Código de rastreamento</label>
+            <input type="text" name="codigo_rastreio"
+                   value="{escape(pedido['codigo_rastreio'] or '')}"
+                   placeholder="Digite o código quando o pedido for postado">
+
+            <button type="submit">Salvar atualização</button>
+        </form>
+
+        <div class="acoes" style="margin-top:20px;">
+            {botao_whatsapp}
+            <a class="botao secundario" href="/admin/pedidos">
+                Voltar aos pedidos
+            </a>
+        </div>
+    </div>
+    """
+
+    return layout_admin(conteudo, f"Pedido {pid}")
+
+
+# =========================================================
+# ARQUIVOS E LOGO
+# =========================================================
+
+@app.route("/arquivos/<path:filename>")
+def servir_arquivos(filename):
+    return send_from_directory(PASTA_ASSETS, filename)
+
+
+# =========================================================
+# ERRO DE UPLOAD
+# =========================================================
 
 @app.errorhandler(413)
-def arquivo_grande(error):
-    html = """
-    <h2 class="secao">Arquivo muito grande</h2>
-    <p>O limite para envio de arquivos é de 5 MB.</p>
-    <a class="botao" href="{{ url_for('admin_dashboard') }}">Voltar</a>
-    """
-    return render_site(html, "Arquivo muito grande"), 413
+def arquivo_muito_grande(erro):
+    flash("A imagem ultrapassa o limite de 5 MB.")
+    return redirect(request.referrer or url_for("admin_painel"))
 
 
 # =========================================================
-# EXECUCAO LOCAL
+# EXECUCAO
 # =========================================================
 
 if __name__ == "__main__":
+    print("=" * 55)
+    print("IWG TECHNOLOGICAL SOLUTIONS")
+    print("Servidor iniciado!")
+    print("Site: http://127.0.0.1:8550")
+    print("Painel: http://127.0.0.1:8550/admin")
+    print("Usuário inicial: iulu")
+    print("Senha inicial: iulu")
+    print("=" * 55)
+
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
-        debug=False
+        port=8550,
+        debug=True
     )
